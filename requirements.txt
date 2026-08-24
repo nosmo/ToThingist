@@ -1,1 +1,4 @@
-todoist-python==7.0.9
+# Mirrors the [project] dependencies in pyproject.toml, which is the
+# source of truth - keep the two in sync.
+todoist-api-python>=4.0,<5
+things.py>=1.0,<2

@@ -38,3 +38,19 @@ The script can currently sync the Todoist inbox to a list in Things,
 and a Things list to the Todoist inbox. The completed/cancelled
 attributes of both systems are synced back and forth. Changes to
 the content of existing todo objects are not mirrored.
+
+toThingist talks to Todoist API v1 via the official
+[todoist-api-python](https://github.com/Doist/todoist-api-python)
+SDK. Due to constraints in the ToDoist API, *completed todos older
+than 90 days will not be completed in Things*. This is a limitation of
+the API and not something that can be addressed programatically, so
+ensure that your crons run regularly.
+
+toThingist is not backwards compatible with older versions that used
+the older todoist API which no longer works. Having an old state file
+could result in the recreation of old todos, referening of them or
+other messes. toThingist does its best to avoid operating on an old
+state file, but be warned.
+
+Pass ```--dry-run``` (```-n```) to see what a sync would do without
+touching Todoist, Things or the state file.

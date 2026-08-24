@@ -1,5 +1,5 @@
 # Mirrors the [project] dependencies in pyproject.toml, which is the
 # source of truth - keep the two in sync.
-todoist-python==7.0.9
+todoist-api-python>=4.0,<5
 # pythings is not published on PyPI, so it is pulled straight from git.
 pythings @ git+https://github.com/nosmo/pythings

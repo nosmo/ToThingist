@@ -18,18 +18,32 @@ import thingsinterface
 LOG = logging.getLogger("tothingist")
 
 
+# Bumped whenever the meaning of the stored IDs changes.
+# * v1: Updated for todoist API v1 IDs. Not backwards compatible with
+#   older state files lacking this flag due to changes to todoist's API.
+STATE_VERSION = 1
+
+
 def new_state():
     """Return an empty sync state mapping."""
 
-    return {"todoist_to_things": {}, "things_to_todoist": {}}
+    return {"version": STATE_VERSION,
+            "todoist_to_things": {}, "things_to_todoist": {}}
+
+
+def has_mappings(state):
+    """Return True if the state holds at least one todo mapping."""
+
+    return bool(state["todoist_to_things"] or state["things_to_todoist"])
 
 
 class ToThingist(object):
 
-    def __init__(self, todoist_obj, things_location, state):
+    def __init__(self, todoist_obj, things_location, state, dry_run=False):
         self.todoist = todoist_obj
         self.things_location = things_location
         self.state = state
+        self.dry_run = dry_run
 
     def sync_things_to_todoist(self):
         """
@@ -43,16 +57,25 @@ class ToThingist(object):
             if todo.thingsid in self.state["things_to_todoist"]:
                 todoist_id = self.state["things_to_todoist"][todo.thingsid]
                 if todo.is_closed() or todo.is_cancelled():
-                    self.todoist.set_complete(todoist_id)
-                    LOG.info("Marking task '%s' as complete in ToDoist",
-                             todo.name)
+                    if self.dry_run:
+                        LOG.info("[dry-run] Would mark task '%s' as complete"
+                                 " in ToDoist", todo.name)
+                    else:
+                        self.todoist.set_complete(todoist_id)
+                        LOG.info("Marking task '%s' as complete in ToDoist",
+                                 todo.name)
 
                 LOG.debug("Todo %s (\"%s\") synced already",
                           todo.thingsid, todo.name)
                 continue
 
+            if self.dry_run:
+                LOG.info("[dry-run] Would create ToDoist todo '%s' in the"
+                         " inbox", todo.name)
+                continue
+
             new_todo = self.todoist.create_todo(todo.name, inbox_id)
-            todoist_id = str(new_todo["id"])
+            todoist_id = str(new_todo.id)
             self.state["todoist_to_things"][todoist_id] = todo.thingsid
             self.state["things_to_todoist"][todo.thingsid] = todoist_id
 
@@ -73,22 +96,31 @@ class ToThingist(object):
 
         for todoist_todo in self.todoist.get_all_todos(
                 self.todoist.get_inbox_id()):
-            name = todoist_todo["content"]
-            todoist_id = str(todoist_todo["id"])
+            name = todoist_todo.content
+            todoist_id = str(todoist_todo.id)
 
             if todoist_id in self.state["todoist_to_things"]:
                 LOG.debug("Todo %s (\"%s\") synced already", todoist_id, name)
 
-                if todoist_todo["checked"]:
-                    # todo is checked off - check off locally
-                    to_complete = thingsinterface.ToDo._getTodoByID(
-                        self.state["todoist_to_things"][todoist_id])
-                    to_complete.complete()
-                    LOG.info("Marked '%s' as complete", name)
+                if todoist_todo.is_completed:
+                    # todo is complete, complete locally
+                    if self.dry_run:
+                        LOG.info("[dry-run] Would mark '%s' as complete in"
+                                 " Things", name)
+                    else:
+                        to_complete = thingsinterface.ToDo._getTodoByID(
+                            self.state["todoist_to_things"][todoist_id])
+                        to_complete.complete()
+                        LOG.info("Marked '%s' as complete", name)
 
                 continue
 
-            if not todoist_todo["checked"]:
+            if not todoist_todo.is_completed:
+                if self.dry_run:
+                    LOG.info("[dry-run] Would create Things todo '%s' in %s",
+                             name, self.things_location)
+                    continue
+
                 newtodo = thingsinterface.ToDo(name=name,
                                                tags=tags,
                                                location=self.things_location)
@@ -110,11 +142,27 @@ def read_state(statefile):
 
     with open(statefile, encoding="utf-8") as state_f:
         try:
-            state.update(json.load(state_f))
+            stored = json.load(state_f)
         except ValueError:
             sys.exit("Failed to read state file %s! Is it valid JSON?" %
                      statefile)
 
+    state.update(stored)
+
+    # An unrecognised version means the stored Todoist IDs were issued by
+    # a different API generation. They would all miss, so every todo would
+    # be silently re-imported - refuse rather than duplicate.
+    if stored.get("version") != STATE_VERSION and has_mappings(state):
+        sys.exit(
+            "State file %s holds version %s mappings, but this toThingist"
+            " expects version %d. Inconsistencies between versions
+            make this likely to cause a huge mess at best. Move the
+            file aside to start from an empty state." % (
+                statefile, stored.get("version", "0 (pre-API-v1)"),
+                STATE_VERSION)
+        )
+
+    state["version"] = STATE_VERSION
     return state
 
 
@@ -139,6 +187,10 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("-v", "--verbose", dest="verbose",
                         help="Be verbose",
+                        action="store_true")
+    parser.add_argument("-n", "--dry-run", dest="dry_run",
+                        help="Report what would be synced without changing"
+                             " anything in Todoist, Things or the state file",
                         action="store_true")
     parser.add_argument("-c", "--config",
                         action="store", dest="configpath",
@@ -166,13 +218,16 @@ def main():
     todoist_obj = todoistinterface.ToDoistInterface(api_key)
 
     tothingist_obj = ToThingist(todoist_obj, things_location,
-                                read_state(statefile))
+                                read_state(statefile),
+                                dry_run=options.dry_run)
 
     tothingist_obj.sync_todoist_to_things(tag_import=True)
     tothingist_obj.sync_things_to_todoist()
 
-    if statefile:
-        if not any(tothingist_obj.state.values()):
+    if options.dry_run:
+        LOG.info("[dry-run] Not writing state file %s", statefile)
+    elif statefile:
+        if not has_mappings(tothingist_obj.state):
             LOG.warning("Not writing state file as there is no content"
                         " to sync. This could be in error or you'll need"
                         " to create at least one todo.")

@@ -1,10 +1,7 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import urllib2
-import urllib
-import json
-import ConfigParser
+import configparser
 import os.path
 
 import todoist
@@ -23,23 +20,24 @@ class ToDoistInterface(object):
         '''
         return self.api.projects.all()
 
+    def get_all_todos(self, project_id):
+        '''
+        Get all todo objects in a project.
+        '''
+        return [i for i in self.api.items.all()
+                if i["project_id"] == project_id]
+
     def get_uncompleted_todos(self, project_id):
         '''
-        Get all uncompleted todo items.
+        Get all uncompleted todo items in a project.
         '''
-        return [ i for i in self.api.items.all() if not i["checked"] ]
+        return [i for i in self.get_all_todos(project_id) if not i["checked"]]
 
     def get_completed_todos(self, project_id):
         '''
-        Get all completed todo items.
+        Get all completed todo items in a project.
         '''
-        return [ i for i in self.api.items.all() if i["checked"] ]
-
-    def get_all_todos(self, project_id):
-        '''
-        Get all todo objects.
-        '''
-        return self.get_uncompleted_todos(project_id) + self.get_completed_todos(project_id)
+        return [i for i in self.get_all_todos(project_id) if i["checked"]]
 
     def set_complete(self, item_id):
         '''
@@ -59,7 +57,7 @@ class ToDoistInterface(object):
          project_id: the id of the project in which to create a todo.
         '''
 
-        add_res = self.api.items.add(name.encode('utf-8'), project_id)
+        add_res = self.api.items.add(name, project_id)
         self.api.commit()
         return add_res
 
@@ -67,16 +65,16 @@ class ToDoistInterface(object):
         '''
         Get the project ID for the Inbox project.
         '''
-        return [ i for i in self.get_projects() if i["name"] == "Inbox" ][0]
+        return [i for i in self.get_projects() if i["name"] == "Inbox"][0]["id"]
 
 def main():
-    config = ConfigParser.ConfigParser()
+    config = configparser.ConfigParser()
     config.read(os.path.expanduser("~/.tothingist"))
     api_key = config.get('login', 'api_token')
     a = ToDoistInterface(api_key)
     inbox_id = a.get_inbox_id()
     import pprint
-    pprint.pprint(a.get_all_todos(inbox_id["id"]))
+    pprint.pprint(a.get_all_todos(inbox_id))
 
 if __name__ == "__main__":
     main()

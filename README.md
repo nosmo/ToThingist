@@ -5,7 +5,9 @@ Bidirectional sync between [Things](http://culturedcode.com/things/) and [ToDois
 
 Requirements
 ---------
-toThingist requires the [pythings](https://github.com/nosmo/pythings) module.
+toThingist requires Python 3 and the
+[pythings](https://github.com/nosmo/pythings) module. Remaining
+dependencies are listed in ```requirements.txt```.
 
 Operation
 ---------

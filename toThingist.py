@@ -1,21 +1,27 @@
-#!/usr/bin/python
-# This is NOT a typo - using the system python is deliberate.
+#!/usr/bin/python3
 
-import ConfigParser
-import optparse
+"""toThingist - sync between Todoist and Cultured Code's Things"""
+
+import argparse
+import configparser
 import json
-import sys
+import logging
+import os
 import os.path
+import sys
 import tempfile
 
 import todoistinterface
 
 import thingsinterface
 
-"""toThingist - sync between Todoist and Cultured Code's Things"""
+LOG = logging.getLogger("tothingist")
 
-BASE_STATE = {"incomplete": [], "complete": [],
-              "todoist_to_things": {}, "things_to_todoist": {}}
+
+def new_state():
+    """Return an empty sync state mapping."""
+
+    return {"todoist_to_things": {}, "things_to_todoist": {}}
 
 
 class ToThingist(object):
@@ -25,12 +31,9 @@ class ToThingist(object):
         self.things_location = things_location
         self.state = state
 
-    def sync_things_to_todoist(self, verbose=False):
+    def sync_things_to_todoist(self):
         """
         Sync the Things location to the ToDoist inbox.
-
-        Args:
-         verbose: bool. If true, debug output will go to stderr.
 
         """
 
@@ -40,22 +43,16 @@ class ToThingist(object):
             if todo.thingsid in self.state["things_to_todoist"]:
                 todoist_id = self.state["things_to_todoist"][todo.thingsid]
                 if todo.is_closed() or todo.is_cancelled():
-                    complete_result = self.todoist.set_complete(todoist_id)
-                    if verbose:
-                        sys.stderr.write(
-                            "Marking task '%s' as complete in ToDoist\n" % todo.name
-                        )
+                    self.todoist.set_complete(todoist_id)
+                    LOG.info("Marking task '%s' as complete in ToDoist",
+                             todo.name)
 
-                if verbose:
-                    sys.stderr.write(
-                        "Todo %s (\"%s\") synced already\n" % (
-                            todo.thingsid, todo.name
-                        )
-                    )
+                LOG.debug("Todo %s (\"%s\") synced already",
+                          todo.thingsid, todo.name)
                 continue
 
-            z = self.todoist.create_todo(todo.name, inbox_id)
-            todoist_id = z["id"]
+            new_todo = self.todoist.create_todo(todo.name, inbox_id)
+            todoist_id = str(new_todo["id"])
             self.state["todoist_to_things"][todoist_id] = todo.thingsid
             self.state["things_to_todoist"][todo.thingsid] = todoist_id
 
@@ -63,106 +60,124 @@ class ToThingist(object):
         return self.state
 
 
-    def sync_todoist_to_things(self, tag_import=False,
-                               verbose=False):
+    def sync_todoist_to_things(self, tag_import=False):
 
         """Sync todoist inbox todos into a given Things location.
 
          Args:
           tag_import: tag all imported todos with "todoist_sync"
-          verbose: bool, if True output debug to stderr
 
         """
 
-        for project in self.todoist.get_projects():
-            if project["name"] == "Inbox":
-                todoist_todos = self.todoist.get_all_todos(project["id"])
-                for todoist_todo in todoist_todos:
-                    creation_date = todoist_todo["date_added"]
-                    name = todoist_todo["content"]
-                    todoist_id = str(todoist_todo["id"])
+        tags = ["todoist_sync"] if tag_import else []
 
-                    if todoist_id in self.state["todoist_to_things"]:
-                        if verbose:
-                            sys.stderr.write(
-                                "Todo %s (\"%s\") synced already\n" % (
-                                    todoist_id, name)
-                            )
+        for todoist_todo in self.todoist.get_all_todos(
+                self.todoist.get_inbox_id()):
+            name = todoist_todo["content"]
+            todoist_id = str(todoist_todo["id"])
 
-                        if todoist_todo["checked"] == 1:
-                            # todo is checked off - check off locally
-                            to_complete = thingsinterface.ToDo._getTodoByID(
-                                self.state["todoist_to_things"][todoist_id])
-                            to_complete.complete()
-                            if verbose:
-                                sys.stderr.write(
-                                    "marked '%s' as complete" % name
-                                )
+            if todoist_id in self.state["todoist_to_things"]:
+                LOG.debug("Todo %s (\"%s\") synced already", todoist_id, name)
 
-                        continue
+                if todoist_todo["checked"]:
+                    # todo is checked off - check off locally
+                    to_complete = thingsinterface.ToDo._getTodoByID(
+                        self.state["todoist_to_things"][todoist_id])
+                    to_complete.complete()
+                    LOG.info("Marked '%s' as complete", name)
 
-                    tags = []
-                    if tag_import:
-                        tags = ["todoist_sync"]
+                continue
 
-                    if todoist_todo["checked"] != 1:
-                        newtodo = thingsinterface.ToDo(name=name,
-                                                       tags=tags,
-                                                       location=self.things_location)
-                        self.state[
-                            "todoist_to_things"][todoist_id] = newtodo.thingsid
-                        self.state[
-                            "things_to_todoist"][newtodo.thingsid] = todoist_id
+            if not todoist_todo["checked"]:
+                newtodo = thingsinterface.ToDo(name=name,
+                                               tags=tags,
+                                               location=self.things_location)
+                self.state[
+                    "todoist_to_things"][todoist_id] = newtodo.thingsid
+                self.state[
+                    "things_to_todoist"][newtodo.thingsid] = todoist_id
         # TODO better return
         return self.state
 
+
+def read_state(statefile):
+    """Load the sync state from disk, falling back to an empty state."""
+
+    state = new_state()
+
+    if not statefile or not os.path.isfile(statefile):
+        return state
+
+    with open(statefile, encoding="utf-8") as state_f:
+        try:
+            state.update(json.load(state_f))
+        except ValueError:
+            sys.exit("Failed to read state file %s! Is it valid JSON?" %
+                     statefile)
+
+    return state
+
+
+def write_state(statefile, state):
+    """Write the sync state to disk, replacing it atomically."""
+
+    # Avoid zeroing the file when the user's system has no disk space
+    # by writing a tempfile alongside it and renaming over the original
+    state_dir = os.path.dirname(statefile) or "."
+    temp_state_f = tempfile.NamedTemporaryFile(
+        mode="w", encoding="utf-8", dir=state_dir, delete=False)
+    try:
+        with temp_state_f:
+            json.dump(state, temp_state_f)
+        os.replace(temp_state_f.name, statefile)
+    except BaseException:
+        os.unlink(temp_state_f.name)
+        raise
+
+
 def main():
-    parser = optparse.OptionParser()
-    parser.add_option("-v", "--verbose", dest="verbose",
-                      help="Be verbose",
-                      action="store_true")
-    parser.add_option("-c", "--config",
-                      action="store", dest="configpath",
-                      default="~/.tothingist",
-                      help="alternate path for configuration file")
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("-v", "--verbose", dest="verbose",
+                        help="Be verbose",
+                        action="store_true")
+    parser.add_argument("-c", "--config",
+                        action="store", dest="configpath",
+                        default="~/.tothingist",
+                        help="alternate path for configuration file")
 
-    (options, args) = parser.parse_args()
+    options = parser.parse_args()
 
-    config = ConfigParser.ConfigParser()
-    config.read(os.path.expanduser(options.configpath))
-    api_key = config.get('login', 'api_token')
-    statefile = os.path.expanduser(config.get("config", "statefile"))
-    things_location = config.get("config", "thingslocation")
+    logging.basicConfig(
+        stream=sys.stderr,
+        level=logging.DEBUG if options.verbose else logging.INFO,
+        format="%(message)s")
+
+    config = configparser.ConfigParser()
+    if not config.read(os.path.expanduser(options.configpath)):
+        sys.exit("No configuration file found at %s" % options.configpath)
+
+    try:
+        api_key = config.get("login", "api_token")
+        statefile = os.path.expanduser(config.get("config", "statefile"))
+        things_location = config.get("config", "thingslocation")
+    except (configparser.NoSectionError, configparser.NoOptionError) as e:
+        sys.exit("Incomplete configuration in %s: %s" % (options.configpath, e))
+
     todoist_obj = todoistinterface.ToDoistInterface(api_key)
 
-    state = BASE_STATE.copy()
-    if statefile and os.path.isfile(statefile):
-        state_f = open(statefile)
-        try:
-            state = json.loads(state_f.read())
-        except ValueError:
-            print "Failed to open state file! Is it valid JSON?"
-            raise SystemExit(1)
-        state_f.close()
+    tothingist_obj = ToThingist(todoist_obj, things_location,
+                                read_state(statefile))
 
-    tothingist_obj = ToThingist(todoist_obj, things_location, state)
-
-    tothingist_obj.sync_todoist_to_things(tag_import=True,
-                                          verbose=options.verbose)
-    tothingist_obj.sync_things_to_todoist(verbose=options.verbose)
+    tothingist_obj.sync_todoist_to_things(tag_import=True)
+    tothingist_obj.sync_things_to_todoist()
 
     if statefile:
-        if not tothingist_obj.state:
-            sys.stderr.write(("Not writing state file as there is no content"
-                              " to sync. This could be in error or you'll need"
-                              " to create at least one todo. "))
+        if not any(tothingist_obj.state.values()):
+            LOG.warning("Not writing state file as there is no content"
+                        " to sync. This could be in error or you'll need"
+                        " to create at least one todo.")
         else:
-            # Avoid zeroing the file when the user's system has no
-            # disk space by writing a tempfile
-            temp_state_filename = tempfile.mkstemp(text=True)
-            with open(temp_state_filename[1], "w") as temp_state_f:
-                temp_state_f.write(json.dumps(tothingist_obj.state))
-            os.rename(temp_state_filename[1], statefile)
+            write_state(statefile, tothingist_obj.state)
 
 if __name__ == "__main__":
     main()

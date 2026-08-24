@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 
 """toThingist - sync between Todoist and Cultured Code's Things"""
 
@@ -39,11 +39,29 @@ def has_mappings(state):
 
 class ToThingist(object):
 
-    def __init__(self, todoist_obj, things_location, state, dry_run=False):
+    def __init__(self, todoist_obj, things_obj, things_location, state,
+                 dry_run=False):
         self.todoist = todoist_obj
+        self.things = things_obj
         self.things_location = things_location
         self.state = state
         self.dry_run = dry_run
+        self._closed_things_ids = None
+
+    def closed_things_ids(self):
+        """Return the IDs of Things todos that were already closed.
+
+        Reading the Things logbook is the expensive part of a sync, so
+        it is done once. The snapshot is taken before anything is
+        changed, which is what both directions want: a todo this run
+        closes in Things was only closed because Todoist had closed it
+        already.
+        """
+
+        if self._closed_things_ids is None:
+            self._closed_things_ids = {
+                todo["uuid"] for todo in self.things.get_closed_todos()}
+        return self._closed_things_ids
 
     def sync_things_to_todoist(self):
         """
@@ -53,31 +71,42 @@ class ToThingist(object):
 
         inbox_id = self.todoist.get_inbox_id()
 
-        for todo in thingsinterface.ToDos(self.things_location):
-            if todo.thingsid in self.state["things_to_todoist"]:
-                todoist_id = self.state["things_to_todoist"][todo.thingsid]
-                if todo.is_closed() or todo.is_cancelled():
-                    if self.dry_run:
-                        LOG.info("[dry-run] Would mark task '%s' as complete"
-                                 " in ToDoist", todo.name)
-                    else:
-                        self.todoist.set_complete(todoist_id)
-                        LOG.info("Marking task '%s' as complete in ToDoist",
-                                 todo.name)
+        # Todos ToDoist has already closed need no closing again -
+        # without this, every todo closed in the last 90 days would be
+        # completed in ToDoist over and over, once per run.
+        closed_in_todoist = {str(todo.id) for todo
+                             in self.todoist.get_completed_todos(inbox_id)}
 
+        # Closing a todo takes it out of its list, so completions are
+        # picked up from the logbook rather than from the location.
+        for todo in self.things.get_closed_todos():
+            todoist_id = self.state["things_to_todoist"].get(todo["uuid"])
+            if not todoist_id or todoist_id in closed_in_todoist:
+                continue
+
+            if self.dry_run:
+                LOG.info("[dry-run] Would mark task '%s' as complete in"
+                         " ToDoist", todo["title"])
+            else:
+                self.todoist.set_complete(todoist_id)
+                LOG.info("Marking task '%s' as complete in ToDoist",
+                         todo["title"])
+
+        for todo in self.things.get_todos(self.things_location):
+            if todo["uuid"] in self.state["things_to_todoist"]:
                 LOG.debug("Todo %s (\"%s\") synced already",
-                          todo.thingsid, todo.name)
+                          todo["uuid"], todo["title"])
                 continue
 
             if self.dry_run:
                 LOG.info("[dry-run] Would create ToDoist todo '%s' in the"
-                         " inbox", todo.name)
+                         " inbox", todo["title"])
                 continue
 
-            new_todo = self.todoist.create_todo(todo.name, inbox_id)
+            new_todo = self.todoist.create_todo(todo["title"], inbox_id)
             todoist_id = str(new_todo.id)
-            self.state["todoist_to_things"][todoist_id] = todo.thingsid
-            self.state["things_to_todoist"][todo.thingsid] = todoist_id
+            self.state["todoist_to_things"][todoist_id] = todo["uuid"]
+            self.state["things_to_todoist"][todo["uuid"]] = todoist_id
 
         #TODO better return
         return self.state
@@ -102,15 +131,15 @@ class ToThingist(object):
             if todoist_id in self.state["todoist_to_things"]:
                 LOG.debug("Todo %s (\"%s\") synced already", todoist_id, name)
 
-                if todoist_todo.is_completed:
+                things_id = self.state["todoist_to_things"][todoist_id]
+                if (todoist_todo.is_completed and
+                        things_id not in self.closed_things_ids()):
                     # todo is complete, complete locally
                     if self.dry_run:
                         LOG.info("[dry-run] Would mark '%s' as complete in"
                                  " Things", name)
                     else:
-                        to_complete = thingsinterface.ToDo._getTodoByID(
-                            self.state["todoist_to_things"][todoist_id])
-                        to_complete.complete()
+                        self.things.set_complete(things_id)
                         LOG.info("Marked '%s' as complete", name)
 
                 continue
@@ -121,13 +150,15 @@ class ToThingist(object):
                              name, self.things_location)
                     continue
 
-                newtodo = thingsinterface.ToDo(name=name,
-                                               tags=tags,
-                                               location=self.things_location)
-                self.state[
-                    "todoist_to_things"][todoist_id] = newtodo.thingsid
-                self.state[
-                    "things_to_todoist"][newtodo.thingsid] = todoist_id
+                things_id = self.things.create_todo(
+                    name, self.things_location, tags=tags)
+                if not things_id:
+                    # The todo exists in Things but we have no ID to
+                    # record for it. create_todo() has said as much.
+                    continue
+
+                self.state["todoist_to_things"][todoist_id] = things_id
+                self.state["things_to_todoist"][things_id] = todoist_id
         # TODO better return
         return self.state
 
@@ -155,9 +186,9 @@ def read_state(statefile):
     if stored.get("version") != STATE_VERSION and has_mappings(state):
         sys.exit(
             "State file %s holds version %s mappings, but this toThingist"
-            " expects version %d. Inconsistencies between versions
-            make this likely to cause a huge mess at best. Move the
-            file aside to start from an empty state." % (
+            " expects version %d. Inconsistencies between versions make"
+            " this likely to cause a huge mess at best. Move the file"
+            " aside to start from an empty state." % (
                 statefile, stored.get("version", "0 (pre-API-v1)"),
                 STATE_VERSION)
         )
@@ -188,6 +219,10 @@ def main():
     parser.add_argument("-v", "--verbose", dest="verbose",
                         help="Be verbose",
                         action="store_true")
+    parser.add_argument("-S", "--print-sql", dest="print_sql",
+                        help="Print every SQL query run against the Things"
+                             " database. Implies --verbose",
+                        action="store_true")
     parser.add_argument("-n", "--dry-run", dest="dry_run",
                         help="Report what would be synced without changing"
                              " anything in Todoist, Things or the state file",
@@ -199,9 +234,11 @@ def main():
 
     options = parser.parse_args()
 
+    verbose = options.verbose or options.print_sql
+
     logging.basicConfig(
         stream=sys.stderr,
-        level=logging.DEBUG if options.verbose else logging.INFO,
+        level=logging.DEBUG if verbose else logging.INFO,
         format="%(message)s")
 
     config = configparser.ConfigParser()
@@ -215,9 +252,15 @@ def main():
     except (configparser.NoSectionError, configparser.NoOptionError) as e:
         sys.exit("Incomplete configuration in %s: %s" % (options.configpath, e))
 
-    todoist_obj = todoistinterface.ToDoistInterface(api_key)
+    # Optional: things.py finds the database on its own unless told
+    # otherwise (see also the THINGSDB environment variable).
+    things_db = config.get("config", "thingsdb", fallback=None)
 
-    tothingist_obj = ToThingist(todoist_obj, things_location,
+    todoist_obj = todoistinterface.ToDoistInterface(api_key)
+    things_obj = thingsinterface.ThingsInterface(filepath=things_db,
+                                                 print_sql=options.print_sql)
+
+    tothingist_obj = ToThingist(todoist_obj, things_obj, things_location,
                                 read_state(statefile),
                                 dry_run=options.dry_run)
 

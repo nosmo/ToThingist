@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "tothingist"
+version = "0.1.0"
+description = "Bidirectional sync between Things and ToDoist"
+readme = "README.md"
+requires-python = ">=3.8"
+authors = [{name = "Hugh Nowlan", email = "nosmo@nosmo.me"}]
+keywords = ["todoist", "things", "todo", "sync"]
+classifiers = [
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: MacOS :: MacOS X",
+    "Programming Language :: Python :: 3",
+]
+
+dependencies = [
+    "todoist-python==7.0.9",
+    # pythings is not published on PyPI, so it is pulled straight from
+    # git. Note that a direct reference like this makes the project
+    # ineligible for upload to PyPI.
+    "pythings @ git+https://github.com/nosmo/pythings",
+]
+
+[project.urls]
+Homepage = "https://github.com/nosmo/toThingist"
+
+[project.scripts]
+tothingist = "toThingist:main"
+
+[tool.setuptools]
+py-modules = ["toThingist", "todoistinterface"]

@@ -50,6 +50,14 @@ and a Things list to the Todoist inbox. The completed/cancelled
 attributes of both systems are synced back and forth. Changes to
 the content of existing todo objects are not mirrored.
 
+Subtasks (single-level subtasks in todoist and task checklists within
+Things) are synced in both directions. Things checklist tasks cannot
+currently be checked off programmatically and so this must be done
+manually when a Todoist subtask is complete. Things checklist items
+that are checked off will resolve Todoist subtasks. See
+[Subtasks](#subtasks) below for more details on how subtasks are
+handled.
+
 toThingist talks to Todoist API v1 via the official
 [todoist-api-python](https://github.com/Doist/todoist-api-python)
 SDK. Due to constraints in the ToDoist API, *completed todos older
@@ -74,11 +82,35 @@ things follow from that:
   applied by toThingist. toThingist will warn when a tag is
   going to be dropped.
 
+Subtasks
+---------
+
+Todoist subtasks are ordinary todos that hang off another todo. Things
+checklists look and function the same to the user but are conceptually
+quite different, functioning as attributes of a task rather than a
+relation between task types.
+
+New subtasks are synced in both directions, attached to their parent
+tasks. Their IDs are kept in the state file in maps of their own,
+separate from the todo maps, so migration between state file formats
+is not required to start using them.
+
+*Things checklist items cannot be marked as done programmatically at
+present.* toThingist warns once per run listing the subtasks this
+applies to, and will keep doing so until they are marked done in
+Things manually. Todoist subtasks that map to Things checklist items
+will be resolved as expected.
+
+Two smaller limits, both from the same URL scheme:
+
+* toThingist supports one level of nesting for tasks - subtasks of
+  subtasks will not be synced.
+* Things checklists cannot be longer than 100 elements.
+
 toThingist is not backwards compatible with older versions that used
 the older todoist API which no longer works. Having an old state file
-could result in the recreation of old todos, referening of them or
-other messes. toThingist does its best to avoid operating on an old
-state file, but be warned.
+could result in the recreation of old todos or other messes.
+toThingist will panic on a mismatched state file.
 
 Pass ```--dry-run``` (```-n```) to see what a sync would do without
 touching Todoist, Things or the state file.

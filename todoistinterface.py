@@ -10,7 +10,8 @@ from todoist_api_python.api import TodoistAPI
 # Fetch this many days of completed tasks - 90 is current max :/
 COMPLETED_WINDOW_DAYS = 90
 
-class ToDoistInterface(object):
+
+class ToDoistInterface:
     """Ugly wrapper for the ToDoist.com API"""
 
     def __init__(self, token):
@@ -28,6 +29,9 @@ class ToDoistInterface(object):
     def get_uncompleted_todos(self, project_id):
         '''
         Get all uncompleted todo items in a project.
+
+        Subtasks are todos like any other, so they are included here.
+        See also get_subtasks().
         '''
         return [task
                 for page in self.api.get_tasks(project_id=project_id)
@@ -51,7 +55,7 @@ class ToDoistInterface(object):
 
     def get_all_todos(self, project_id):
         '''
-        Get all todo objects in a project.
+        Get all todo objects in a project, subtasks included.
 
         Active and completed todos live behind separate endpoints, so
         this necessarily costs two sets of requests rather than one.
@@ -67,15 +71,42 @@ class ToDoistInterface(object):
         '''
         return self.api.complete_task(item_id)
 
-    def create_todo(self, name, project_id):
+    def create_todo(self, name, project_id=None, parent_id=None):
         '''
         Create a new todo.
 
          name: the label for the todo item.
          project_id: the id of the project in which to create a todo.
+         parent_id: the id of the todo to make this task a subtask of
+          A subtask lives in its parent's project, so not rqeuired here.
         '''
 
+        if parent_id:
+            return self.api.add_task(name, parent_id=parent_id)
+
+        if not project_id:
+            raise ValueError(
+                "A todoist todo must have either a project or parent"
+            )
+
         return self.api.add_task(name, project_id=project_id)
+
+    @staticmethod
+    def get_subtasks(todos):
+        '''
+        Group todos by their parent ID
+
+        Subtasks appear alongside all other todos, this
+        function filters them out.
+
+         todos: todo objects as returned by get_all_todos().
+        '''
+
+        subtasks = {}
+        for todo in todos:
+            if todo.parent_id:
+                subtasks.setdefault(str(todo.parent_id), []).append(todo)
+        return subtasks
 
     def get_inbox_id(self):
         '''
@@ -86,14 +117,16 @@ class ToDoistInterface(object):
                 return project.id
         raise LookupError("No Inbox project found in this Todoist account")
 
+
 def main():
     config = configparser.ConfigParser()
     config.read(os.path.expanduser("~/.tothingist"))
     api_key = config.get('login', 'api_token')
-    a = ToDoistInterface(api_key)
-    inbox_id = a.get_inbox_id()
+    api = ToDoistInterface(api_key)
+    inbox_id = api.get_inbox_id()
     import pprint
-    pprint.pprint(a.get_all_todos(inbox_id))
+    pprint.pprint(api.get_all_todos(inbox_id))
+
 
 if __name__ == "__main__":
     main()

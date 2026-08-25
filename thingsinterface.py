@@ -31,6 +31,9 @@ CLOSED_WINDOW_DAYS = 90
 CREATE_POLL_ATTEMPTS = 40
 CREATE_POLL_INTERVAL = 0.25
 
+# Max checklist items in Things. Anything over this is dropped
+CHECKLIST_LIMIT = 100
+
 BUILTIN_READERS = {
     "inbox": things.inbox,
     "today": things.today,
@@ -41,6 +44,9 @@ BUILTIN_READERS = {
 
 # Lists we can't sync to
 RO_LISTS = ("logbook", "trash")
+
+# Statuses that things.py reports for closed checklist items
+CLOSED_CHECKLIST_STATUSES = ("completed", "canceled")
 
 # The URL scheme "when" value that files a new todo into each built-in
 # list. The Inbox is where a todo lands when no "when" is given at all,
@@ -54,7 +60,7 @@ BUILTIN_WHEN = {
 }
 
 
-class ThingsInterface(object):
+class ThingsInterface:
     """Wrapper for the bits of Things that toThingist needs."""
 
     def __init__(self, filepath=None, print_sql=False):
@@ -232,6 +238,66 @@ class ThingsInterface(object):
         """
 
         self._open_url(self._update_url(uuid, completed="true"))
+
+    def get_checklist_items(self, uuid):
+        """
+        Get checklist items of a todo. All items will be returned,
+        open, cancelled or completed.
+
+         uuid: the Things ID of the todo the checklist hangs off.
+
+        """
+
+        return things.checklist_items(uuid, **self._query_args())
+
+    def create_checklist_item(self, uuid, name):
+        """
+        Append an item to a todo's checklist and return the item's
+        Things ID. Returns None if the item couldn't be found or if a
+        checklist is over 100 items.
+
+         uuid: the Things ID of the todo to append to.
+         name: the title of the checklist item.
+        """
+
+        if not name:
+            raise ValueError(
+                "Refusing to create a Things checklist item with no title"
+            )
+
+        # The URL scheme separates checklist items by newline, so a
+        # title containing one would silently arrive as several items -
+        # and only one of them could be recorded in the state file.
+        title = " ".join(name.splitlines())
+        if title != name:
+            LOG.warning(
+                "Checklist item '%s' spans several lines. Things reads a"
+                " line break as the start of another item, so it has been"
+                " flattened to '%s'.", name, title)
+
+        existing = {item["uuid"] for item in self.get_checklist_items(uuid)}
+
+        self._open_url(self._update_url(
+            uuid, **{"append-checklist-items": title}))
+
+        for _ in range(CREATE_POLL_ATTEMPTS):
+            time.sleep(CREATE_POLL_INTERVAL)
+            created = [item for item in self.get_checklist_items(uuid)
+                       if item["uuid"] not in existing
+                       and item["title"] == title]
+            if created:
+                # As in create_todo(), a second match means something
+                # else added an identical item just now. Newest wins.
+                return max(created, key=lambda item: item["created"])["uuid"]
+
+        LOG.warning(
+            "Asked Things to add checklist item '%s', but it had not appeared"
+            " on todo %s after %.1f seconds, so it cannot be recorded in the"
+            " state file. Either the todo is at its %d item limit, or the"
+            " item will be added again on the next run unless you delete it.",
+            title, uuid, CREATE_POLL_ATTEMPTS * CREATE_POLL_INTERVAL,
+            CHECKLIST_LIMIT)
+        return None
 
     def _get_todos_titled(self, title):
         """Get every todo, closed ones included, with exactly this title."""

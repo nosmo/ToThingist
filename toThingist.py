@@ -3,6 +3,7 @@
 """toThingist - sync between Todoist and Cultured Code's Things"""
 
 import argparse
+import collections
 import configparser
 import json
 import logging
@@ -22,6 +23,18 @@ LOG = logging.getLogger("tothingist")
 # * v1: Updated for todoist API v1 IDs. Not backwards compatible with
 #   older state files lacking this flag due to changes to todoist's API.
 STATE_VERSION = 1
+
+# The config section holding the project mappings, one
+# "todoist project: things location" per line.
+MAPPING_SECTION = "projects"
+
+# Used to spot a required option that isn't there, as None and "" are
+# both things an option could legitimately be set to.
+_REQUIRED = object()
+
+# Bidirectional mapping between todoist projects and things location
+SyncPair = collections.namedtuple("SyncPair",
+                                  ["todoist_project", "things_location"])
 
 
 def new_state():
@@ -45,16 +58,72 @@ def has_mappings(state):
                 "todoist_to_things_subtasks", "things_to_todoist_subtasks"))
 
 
+def get_option(config, section, option):
+    """Get a config option, case insensitive.
+
+     option: the name of the option, in lower case.
+    """
+
+    for name, value in config.items(section):
+        if name.lower() == option:
+            return value
+
+    return None
+
+
+def read_pairs(config):
+    """Work out which Todoist projects sync with which Things locations.
+
+    Or use thingslocation as a default.
+    """
+
+    if not config.has_section(MAPPING_SECTION):
+        return [SyncPair(todoistinterface.INBOX_NAME,
+                         get_option(config, "config", "thingslocation"))]
+
+    defaults = {name.lower() for name in config.defaults()}
+
+    pairs = []
+    for project, location in config.items(MAPPING_SECTION):
+        if project.lower() in defaults:
+            continue
+        if not location.strip():
+            raise ValueError(
+                "Todoist project %r in [%s] is not mapped to any Things"
+                " location" % (project, MAPPING_SECTION))
+        pairs.append(SyncPair(project.strip(), location.strip()))
+
+    if not pairs:
+        raise ValueError(
+            "The [%s] section maps nothing - give it a line per pair of"
+            " projects to sync, in the form"
+            " 'todoist project: things location'" % MAPPING_SECTION)
+
+    # refuse to map a things location to two todoist projects
+    locations = collections.Counter(pair.things_location for pair in pairs)
+    repeated = sorted(location for location, count in locations.items()
+                      if count > 1)
+    if repeated:
+        raise ValueError(
+            "Things location(s) %s are mapped to more than one Todoist"
+            " project in [%s]" % (", ".join(repeated), MAPPING_SECTION))
+
+    return pairs
+
+
 class ToThingist(object):
 
-    def __init__(self, todoist_obj, things_obj, things_location, state,
-                 dry_run=False):
+    def __init__(self, todoist_obj, things_obj, pairs, state, dry_run=False):
         self.todoist = todoist_obj
         self.things = things_obj
-        self.things_location = things_location
+        self.pairs = list(pairs)
         self.state = state
         self.dry_run = dry_run
+        self._closed_things_todos = None
         self._closed_things_ids = None
+        self._completed_todoist_todos = None
+        self._completed_todoist_ids = None
+        self._todoist_project_ids = {}
         self._unclosable_checklist_items = []
 
         # used when doing a dry run, where no parents will be
@@ -62,8 +131,29 @@ class ToThingist(object):
         self._dry_run_todoist_parents = set()
         self._dry_run_things_parents = set()
 
-    def closed_things_ids(self):
-        """Return the IDs of Things todos that were already closed.
+    def todoist_project_id(self, pair):
+        """Return the ID of the Todoist project a pair syncs with."""
+
+        if pair.todoist_project not in self._todoist_project_ids:
+            self._todoist_project_ids[pair.todoist_project] = (
+                self.todoist.resolve_project_id(pair.todoist_project))
+        return self._todoist_project_ids[pair.todoist_project]
+
+    def check_pairs(self):
+        """Check that every mapped project and location exists.
+
+        Looking them all up before syncing anything turns a typo into
+        one error rather than a half-done sync.
+        """
+
+        for pair in self.pairs:
+            self.todoist_project_id(pair)
+            self.things.resolve_location(pair.things_location)
+            LOG.debug("Syncing Todoist project '%s' with Things '%s'",
+                      pair.todoist_project, pair.things_location)
+
+    def closed_things_todos(self):
+        """Return the Things todos that were already closed.
 
         Reading the Things logbook is the expensive part of a sync, so
         it is done once. The snapshot is taken before anything is
@@ -72,28 +162,103 @@ class ToThingist(object):
         already.
         """
 
+        if self._closed_things_todos is None:
+            self._closed_things_todos = self.things.get_closed_todos()
+        return self._closed_things_todos
+
+    def closed_things_ids(self):
+        """Return the IDs of Things todos that were already closed."""
+
         if self._closed_things_ids is None:
             self._closed_things_ids = {
-                todo["uuid"] for todo in self.things.get_closed_todos()}
+                todo["uuid"] for todo in self.closed_things_todos()}
         return self._closed_things_ids
+
+    def completed_todoist_todos(self, project_id=None):
+        """Return the Todoist todos that were already completed.
+
+        Todoist serves completed todos from an endpoint that can't
+        filter by project, so they are fetched once for the whole
+        account and grouped here rather than fetched once per mapping.
+
+         project_id: only return the todos of this project.
+        """
+
+        if self._completed_todoist_todos is None:
+            self._completed_todoist_todos = {}
+            for todo in self.todoist.get_completed_todos():
+                self._completed_todoist_todos.setdefault(
+                    str(todo.project_id), []).append(todo)
+
+        if project_id is None:
+            return [todo
+                    for todos in self._completed_todoist_todos.values()
+                    for todo in todos]
+        return self._completed_todoist_todos.get(str(project_id), [])
+
+    def completed_todoist_ids(self):
+        """Return the IDs of the todos Todoist has already completed."""
+
+        if self._completed_todoist_ids is None:
+            self._completed_todoist_ids = {
+                str(todo.id) for todo in self.completed_todoist_todos()}
+        return self._completed_todoist_ids
 
     def sync_things_to_todoist(self):
         """
-        Sync the Things location to the ToDoist inbox.
+        Sync each mapped Things location to its ToDoist project.
 
         """
 
-        inbox_id = self.todoist.get_inbox_id()
+        self.complete_in_todoist()
+
+        for pair in self.pairs:
+            project_id = self.todoist_project_id(pair)
+            things_todos = self.things.get_todos(pair.things_location)
+
+            for todo in things_todos:
+                if todo["uuid"] in self.state["things_to_todoist"]:
+                    LOG.debug("Todo %s (\"%s\") synced already",
+                              todo["uuid"], todo["title"])
+                    continue
+
+                if self.dry_run:
+                    LOG.info("[dry-run] Would create ToDoist todo '%s' in"
+                             " '%s'", todo["title"], pair.todoist_project)
+                    self._dry_run_things_parents.add(todo["uuid"])
+                    continue
+
+                new_todo = self.todoist.create_todo(todo["title"], project_id)
+                todoist_id = str(new_todo.id)
+                self.state["todoist_to_things"][todoist_id] = todo["uuid"]
+                self.state["things_to_todoist"][todo["uuid"]] = todoist_id
+
+            # Done after the loop above so that checklists hanging off
+            # todos created by this very run have a Todoist parent to go
+            # under.
+            self.sync_things_subtasks_to_todoist(things_todos,
+                                                 self.completed_todoist_ids())
+
+        #TODO better return
+        return self.state
+
+    def complete_in_todoist(self):
+        """
+        Complete in ToDoist the todos that Things has closed.
+
+        Closing a todo takes it out of its list, so completions are
+        picked up from the logbook rather than from the mapped
+        locations. That also means a todo is completed in whichever
+        project it was synced to, without caring which mapping first
+        carried it over.
+        """
 
         # Todos ToDoist has already closed need no closing again -
         # without this, every todo closed in the last 90 days would be
         # completed in ToDoist over and over, once per run.
-        closed_in_todoist = {str(todo.id) for todo
-                             in self.todoist.get_completed_todos(inbox_id)}
+        closed_in_todoist = self.completed_todoist_ids()
 
-        # Closing a todo takes it out of its list, so completions are
-        # picked up from the logbook rather than from the location.
-        for todo in self.things.get_closed_todos():
+        for todo in self.closed_things_todos():
             todoist_id = self.state["things_to_todoist"].get(todo["uuid"])
             if not todoist_id or todoist_id in closed_in_todoist:
                 continue
@@ -105,32 +270,6 @@ class ToThingist(object):
                 self.todoist.set_complete(todoist_id)
                 LOG.info("Marking task '%s' as complete in ToDoist",
                          todo["title"])
-
-        things_todos = self.things.get_todos(self.things_location)
-
-        for todo in things_todos:
-            if todo["uuid"] in self.state["things_to_todoist"]:
-                LOG.debug("Todo %s (\"%s\") synced already",
-                          todo["uuid"], todo["title"])
-                continue
-
-            if self.dry_run:
-                LOG.info("[dry-run] Would create ToDoist todo '%s' in the"
-                         " inbox", todo["title"])
-                self._dry_run_things_parents.add(todo["uuid"])
-                continue
-
-            new_todo = self.todoist.create_todo(todo["title"], inbox_id)
-            todoist_id = str(new_todo.id)
-            self.state["todoist_to_things"][todoist_id] = todo["uuid"]
-            self.state["things_to_todoist"][todo["uuid"]] = todoist_id
-
-        # Done after the loop above so that checklists hanging off todos
-        # created by this very run have a Todoist parent to go under.
-        self.sync_things_subtasks_to_todoist(things_todos, closed_in_todoist)
-
-        # TODO better return
-        return self.state
 
     def sync_things_subtasks_to_todoist(self, things_todos, closed_in_todoist):
         """
@@ -204,7 +343,7 @@ class ToThingist(object):
 
     def sync_todoist_to_things(self, tag_import=False):
 
-        """Sync todoist inbox todos into a given Things location.
+        """Sync each mapped todoist project into its Things location.
 
          Args:
           tag_import: tag all imported todos with "todoist_sync"
@@ -213,56 +352,32 @@ class ToThingist(object):
 
         tags = ["todoist_sync"] if tag_import else []
 
-        todoist_todos = self.todoist.get_all_todos(self.todoist.get_inbox_id())
+        for pair in self.pairs:
+            project_id = self.todoist_project_id(pair)
 
-        for todoist_todo in todoist_todos:
-            # This list will include subtasks - we cover those later
-            # so ignore for now
-            if todoist_todo.parent_id:
-                continue
+            # Whether Todoist has a todo completed is taken from the
+            # endpoint it came out of rather than from the todo itself
+            todoist_todos = self.todoist.get_uncompleted_todos(project_id)
+            completed_todos = self.completed_todoist_todos(project_id)
 
-            name = todoist_todo.content
-            todoist_id = str(todoist_todo.id)
+            # Both lists include subtasks - we cover those below, so
+            # ignore them for now
+            for todo in todoist_todos:
+                if not todo.parent_id:
+                    self.import_todo(pair, todo, tags=tags, completed=False)
+            for todo in completed_todos:
+                if not todo.parent_id:
+                    self.import_todo(pair, todo, tags=tags, completed=True)
 
-            if todoist_id in self.state["todoist_to_things"]:
-                LOG.debug("Todo %s (\"%s\") synced already", todoist_id, name)
+            self.sync_todoist_subtasks_to_things(
+                pair, todoist_todos + completed_todos)
 
-                things_id = self.state["todoist_to_things"][todoist_id]
-                if (todoist_todo.is_completed and
-                        things_id not in self.closed_things_ids()):
-                    # todo is complete, complete locally
-                    if self.dry_run:
-                        LOG.info("[dry-run] Would mark '%s' as complete in"
-                                 " Things", name)
-                    else:
-                        self.things.set_complete(things_id)
-                        LOG.info("Marked '%s' as complete", name)
-
-                continue
-
-            if not todoist_todo.is_completed:
-                if self.dry_run:
-                    LOG.info("[dry-run] Would create Things todo '%s' in %s",
-                             name, self.things_location)
-                    self._dry_run_todoist_parents.add(todoist_id)
-                    continue
-
-                things_id = self.things.create_todo(
-                    name, self.things_location, tags=tags)
-                if not things_id:
-                    # The todo exists in Things but we have no ID to
-                    # record for it. create_todo() has said as much.
-                    continue
-
-                self.state["todoist_to_things"][todoist_id] = things_id
-                self.state["things_to_todoist"][things_id] = todoist_id
-
-        self.sync_todoist_subtasks_to_things(todoist_todos)
+        self._warn_about_unclosable_items()
 
         # TODO better return
         return self.state
 
-    def sync_todoist_subtasks_to_things(self, todoist_todos):
+    def sync_todoist_subtasks_to_things(self, pair, todoist_todos):
         """
         Sync Todoist subtasks into Things todo checklists.
 
@@ -275,10 +390,15 @@ class ToThingist(object):
           with applescript as in pythings but who wants to go back to
           doing that ;_;
 
-         todoist_todos: todos from the Todoist inbox, as returned by
-          ToDoistInterface.get_all_todos().
+         pair: the mapping the todos arrived through.
+         todoist_todos: todos of the mapped Todoist project, completed
+          ones included.
 
         """
+
+        # As in sync_todoist_to_things(), completion is taken from the
+        # endpoint a todo came out of rather than from the todo itself.
+        completed_ids = self.completed_todoist_ids()
 
         subtasks_by_parent = self.todoist.get_subtasks(todoist_todos)
 
@@ -293,11 +413,11 @@ class ToThingist(object):
                         ", ".join("'%s'" % task.content for task in subtasks))
                 elif parent_id in self._dry_run_todoist_parents:
                     for subtask in subtasks:
-                        if not subtask.is_completed:
+                        if str(subtask.id) not in completed_ids:
                             LOG.info(
                                 "[dry-run] Would add checklist item '%s' to a"
-                                " Things todo in %s",
-                                subtask.content, self.things_location)
+                                " Things todo in '%s'",
+                                subtask.content, pair.things_location)
                 # Otherwise we haven't seen a parent at all
                 continue
 
@@ -310,7 +430,7 @@ class ToThingist(object):
                     subtask_id)
 
                 if item_uuid:
-                    if not subtask.is_completed:
+                    if subtask_id not in completed_ids:
                         continue
 
                     # Reading the checklist is only worth it once it is
@@ -322,12 +442,13 @@ class ToThingist(object):
                         self._unclosable_checklist_items.append(name)
                     continue
 
-                if subtask.is_completed:
+                if subtask_id in completed_ids:
                     continue
 
                 if self.dry_run:
                     LOG.info("[dry-run] Would add checklist item '%s' to a"
-                             " Things todo in %s", name, self.things_location)
+                             " Things todo in '%s'", name,
+                             pair.things_location)
                     continue
 
                 item_uuid = self.things.create_checklist_item(
@@ -341,8 +462,6 @@ class ToThingist(object):
                     item_uuid
                 self.state["things_to_todoist_subtasks"][item_uuid] = \
                     subtask_id
-
-        self._warn_about_unclosable_items()
 
     def closed_checklist_items(self, things_uuid):
         """Return the IDs of a Things todo's checklist items that are done."""
@@ -371,6 +490,53 @@ class ToThingist(object):
             ", ".join("'%s'" % name
                       for name in self._unclosable_checklist_items))
         self._unclosable_checklist_items = []
+
+    def import_todo(self, pair, todoist_todo, tags=(), completed=False):
+        """
+        Import a todoist todo to a things location
+
+         pair: the mapping the todo arrived through.
+         todoist_todo: the todo to import.
+         tags: tags to apply to a todo created in Things.
+         completed: whether ToDoist has this todo completed.
+        """
+
+        name = todoist_todo.content
+        todoist_id = str(todoist_todo.id)
+
+        if todoist_id in self.state["todoist_to_things"]:
+            LOG.debug("Todo %s (\"%s\") synced already", todoist_id, name)
+
+            things_id = self.state["todoist_to_things"][todoist_id]
+            if completed and things_id not in self.closed_things_ids():
+                # todo is complete, complete locally
+                if self.dry_run:
+                    LOG.info("[dry-run] Would mark '%s' as complete in"
+                             " Things", name)
+                else:
+                    self.things.set_complete(things_id)
+                    LOG.info("Marked '%s' as complete", name)
+
+            return
+
+        if completed:
+            return
+
+        if self.dry_run:
+            LOG.info("[dry-run] Would create Things todo '%s' in '%s'",
+                     name, pair.things_location)
+            self._dry_run_todoist_parents.add(todoist_id)
+            return
+
+        things_id = self.things.create_todo(
+            name, pair.things_location, tags=tags)
+        if not things_id:
+            # The todo exists in Things but we have no ID to record for
+            # it. create_todo() has said as much.
+            return
+
+        self.state["todoist_to_things"][todoist_id] = things_id
+        self.state["things_to_todoist"][things_id] = todoist_id
 
 
 def read_state(statefile):
@@ -452,29 +618,43 @@ def main():
         format="%(message)s")
 
     config = configparser.ConfigParser()
+    # Option names in [projects] are Todoist project names, which are
+    # case sensitive. get_option() keeps the case of the other option
+    # names from mattering.
+    config.optionxform = str
     if not config.read(os.path.expanduser(options.configpath)):
         sys.exit("No configuration file found at %s" % options.configpath)
 
     try:
-        api_key = config.get("login", "api_token")
-        statefile = os.path.expanduser(config.get("config", "statefile"))
-        things_location = config.get("config", "thingslocation")
-    except (configparser.NoSectionError, configparser.NoOptionError) as exc:
-        sys.exit(
-            "Incomplete configuration in %s: %s" % (options.configpath, exc)
-        )
+        api_key = get_option(config, "login", "api_token")
+        statefile = os.path.expanduser(get_option(config, "config",
+                                                 "statefile"))
+        pairs = read_pairs(config)
+    except (configparser.Error, ValueError) as e:
+        sys.exit("Bad configuration in %s: %s" % (options.configpath, e))
+
+    if (config.has_section(MAPPING_SECTION) and
+            get_option(config, "config", "thingslocation")):
+        LOG.info("Ignoring 'thingslocation' as the [%s] section says what to"
+                 " sync where", MAPPING_SECTION)
 
     # Optional: things.py finds the database on its own unless told
     # otherwise (see also the THINGSDB environment variable).
-    things_db = config.get("config", "thingsdb", fallback=None)
+    things_db = get_option(config, "config", "thingsdb")
 
     todoist_obj = todoistinterface.ToDoistInterface(api_key)
     things_obj = thingsinterface.ThingsInterface(filepath=things_db,
                                                  print_sql=options.print_sql)
 
-    tothingist_obj = ToThingist(todoist_obj, things_obj, things_location,
+    tothingist_obj = ToThingist(todoist_obj, things_obj, pairs,
                                 read_state(statefile),
                                 dry_run=options.dry_run)
+
+    try:
+        tothingist_obj.check_pairs()
+    except (LookupError, ValueError) as e:
+        sys.exit("Cannot sync the projects configured in %s: %s" % (
+            options.configpath, e))
 
     tothingist_obj.sync_todoist_to_things(tag_import=True)
     tothingist_obj.sync_things_to_todoist()

@@ -1,9 +1,18 @@
-[DEFAULT]
-thingslocation: Today
 [login]
 api_token: f00f00f00f00f00f00f
 [config]
 statefile: ~/.tothingist_state
-thingslocation: Today
 # Optional - specify a things database. Usually not required
 #thingsdb: ~/Library/Group Containers/JLMPQHK86H.com.culturedcode.ThingsMac/ThingsData-XXXXXX/Things Database.thingsdatabase/main.sqlite
+# Optional - sync todoist Inbox with this location in things. Useful for basic operations, but generally rendered a little obsolete by the `[projects`] structure.
+#thingslocation: Today
+
+# Which Todoist project syncs with which Things list, project or area,
+# one pair per line. Todoist project on the left, Things project on the right
+
+# Where a name is ambiguous, a Todoist project inside another can be written
+# "Parent/Child" and a Things project inside an area "Area/Project".
+[projects]
+Inbox: Today
+Work: Work
+Household/Renovation: Home/Renovation

@@ -25,19 +25,45 @@ Writing to Things requires the use of the Things URL scheme. See the
 documentation](https://culturedcode.com/things/support/articles/2803573/#overview-authorization)
 for details on how to enable its use.
 
-The ```thingslocation``` option is used to indicate where a todo
-should go once imported from todoist. This can be one of the built-in
-Things lists (```Inbox```, ```Today```, ```Anytime```, ```Someday```)
-or the title of a project or area. Don't use ```Upcoming``` as this
-can't be written to in normal situations
+The ```[projects]``` section configures which Todoist project syncs with
+which Things location, one pair per line:
+
+```
+[projects]
+Inbox: Today
+Work: Work
+Household/Renovation: Home/Renovation
+```
+
+On the left is a Todoist project name, where ```Inbox``` always means
+the Todoist inbox whatever the account's language calls it. On the
+right is one of the built-in Things lists (```Inbox```, ```Today```,
+```Anytime```, ```Someday```) or the title of a project or area. Don't
+use ```Upcoming``` as this can't be written to in normal situations.
+
+Names are matched exactly, case included. Both applications allow two
+projects to share a name, so where a name is ambiguous a Todoist
+project can be named by its ```Parent/Child``` path and a Things
+project by its ```Area/Project``` one. toThingist says which paths it
+found rather than guessing between them.
+
+Two Todoist projects can't be mapped to the same Things location.
+Things can get a little unpredictable if a project is synced that
+contains todos that are also in Today for example, as a todo will only
+get synced once but the relations will be maintained.
+
+For backwards compatibility, a config file with no ```[projects]```
+section falls back to the ```thingslocation``` option, which is the
+same as mapping ```Inbox``` to that location. When ```[projects]``` is
+present, ```thingslocation``` is ignored.
 
 The optional ```thingsdb``` option points at the Things database. This
 isn't generally required as thingsapi can find it in most cases. The
 `THINGSDB` environment variable can also be set.
 
-Running toThingist.py will sync all todos in ```thingslocation``` to
-the inbox of the configured Todoist account, and all todos from the
-Todoist inbox to ```thingslocation```. The mapping between todos is
+Running toThingist.py will sync all todos in the Things location to
+the Todoist project and all todos in the Todoist project to the Things
+location, for every configured project. The mapping between todos is
 maintained in the state file.
 
 The script is largely designed with an eye to it being run via cron.
@@ -45,10 +71,11 @@ The script is largely designed with an eye to it being run via cron.
 Current state
 ---------
 
-The script can currently sync the Todoist inbox to a list in Things,
-and a Things list to the Todoist inbox. The completed/cancelled
-attributes of both systems are synced back and forth. Changes to
-the content of existing todo objects are not mirrored.
+ToThingist can currently sync any number of Todoist projects to
+matching Things lists, projects or areas, and back again. The
+completed/cancelled attributes of both systems are synced back and
+forth, wherever a todo was synced to. Changes to things like text will
+not be synced between existing todos.
 
 Subtasks (single-level subtasks in todoist and task checklists within
 Things) are synced in both directions. Things checklist tasks cannot

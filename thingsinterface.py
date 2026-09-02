@@ -48,6 +48,9 @@ RO_LISTS = ("logbook", "trash")
 # Statuses that things.py reports for closed checklist items
 CLOSED_CHECKLIST_STATUSES = ("completed", "canceled")
 
+# Projects with identical names in different areas use this divider
+LOCATION_PATH_SEPARATOR = "/"
+
 # The URL scheme "when" value that files a new todo into each built-in
 # list. The Inbox is where a todo lands when no "when" is given at all,
 # and "upcoming" is only reachable by naming a specific date, so neither
@@ -95,8 +98,8 @@ class ThingsInterface:
         such location.
 
          location: the name of a built-in list ("Inbox", "Today",
-          "Anytime", "Someday", "Upcoming"), or the title of a project
-          or area.
+          "Anytime", "Someday", "Upcoming"), the title of a project or
+          area, or the "Area/Project" path of a project.
         """
 
         if location in self._locations:
@@ -110,23 +113,49 @@ class ThingsInterface:
                 "%r only holds todos that are already done with, so there is"
                 " nothing to sync there" % location)
         else:
-            for project in things.projects(**self._query_args()):
-                if project["title"] == location:
-                    resolved = ("project", project)
-                    break
-            else:
-                for area in things.areas(**self._query_args()):
-                    if area["title"] == location:
-                        resolved = ("area", area)
-                        break
-                else:
-                    raise KeyError(
-                        "No Things location called %r (expected one of %s, or"
-                        " the title of a project or area)" % (
-                            location, ", ".join(sorted(BUILTIN_READERS))))
+            resolved = self._resolve_list(location.strip())
 
         self._locations[location] = resolved
         return resolved
+
+    def _resolve_list(self, title):
+        """
+        Find the project or area by title.
+
+        Check projects before areas
+
+         title: the title of a project or area, or the "Area/Project"
+          path of a project in case of an overlapping project name
+        """
+
+        for kind, listing in (("project", things.projects),
+                              ("area", things.areas)):
+            matches = [entry for entry in listing(**self._query_args())
+                       if title in (entry["title"], self._list_path(entry))]
+
+            if len(matches) == 1:
+                return (kind, matches[0])
+
+            if matches:
+                raise ValueError(
+                    "Things holds %d %ss called %r - use one of %s instead" % (
+                        len(matches), kind, title,
+                        ", ".join(sorted(self._list_path(entry)
+                                         for entry in matches))))
+
+        raise KeyError(
+            "No Things location called %r (expected one of %s, or the title"
+            " of a project or area)" % (
+                title, ", ".join(sorted(BUILTIN_READERS))))
+
+    @staticmethod
+    def _list_path(entry):
+        """Return the "Area/Project" path of a project or area."""
+
+        if entry.get("area_title"):
+            return "%s%s%s" % (entry["area_title"], LOCATION_PATH_SEPARATOR,
+                               entry["title"])
+        return entry["title"]
 
     def get_todos(self, location):
         """
@@ -196,10 +225,8 @@ class ThingsInterface:
             if BUILTIN_WHEN[resolved]:
                 parameters["when"] = BUILTIN_WHEN[resolved]
         else:
-            # The URL scheme takes projects and areas alike as a list
-            # title, so the resolved location is only used to check
-            # that there is something there to create a todo in.
-            parameters["list"] = resolved["title"]
+            # Resolve a UUID in order to account for duplicate names
+            parameters["list-id"] = resolved["uuid"]
 
         if tags:
             self._warn_about_missing_tags(tags)
@@ -211,7 +238,7 @@ class ThingsInterface:
         # are about to create, however identical it looks.
         existing = {todo["uuid"] for todo in self._get_todos_titled(name)}
 
-        self._open_url(things.url(command="add", **parameters))
+        self._open_url(self._add_url(parameters))
 
         for _ in range(CREATE_POLL_ATTEMPTS):
             time.sleep(CREATE_POLL_INTERVAL)
@@ -319,6 +346,21 @@ class ThingsInterface:
                 "Tag(s) %s do not exist in Things and will be dropped from"
                 " todos created by this run. Create them in Things to have"
                 " them applied.", ", ".join(missing))
+
+    @staticmethod
+    def _add_url(parameters):
+        """Build a things:///add URL.
+
+        Similar to things.url(), but account for list-id as it is not
+        an accepted keyword.
+
+         parameters: the URL parameters for a todo.
+
+        """
+
+        query = urllib.parse.urlencode(parameters,
+                                       quote_via=urllib.parse.quote)
+        return "things:///add?%s" % query
 
     def _update_url(self, uuid, **parameters):
         """

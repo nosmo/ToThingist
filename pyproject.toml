@@ -23,10 +23,10 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/nosmo/toThingist"
+Homepage = "https://github.com/nosmo/ToThingist"
 
 [project.scripts]
-tothingist = "toThingist:main"
+tothingist = "ToThingist:main"
 
 [tool.setuptools]
-py-modules = ["toThingist", "thingsinterface", "todoistinterface"]
+py-modules = ["ToThingist", "thingsinterface", "todoistinterface"]

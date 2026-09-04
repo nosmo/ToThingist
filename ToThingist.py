@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 
-"""toThingist - sync between Todoist and Cultured Code's Things"""
+"""ToThingist - sync between Todoist and Cultured Code's Things"""
 
 import argparse
 import collections
@@ -561,7 +561,7 @@ def read_state(statefile):
     # be silently re-imported - refuse rather than duplicate.
     if stored.get("version") != STATE_VERSION and has_mappings(state):
         sys.exit(
-            "State file %s holds version %s mappings, but this toThingist"
+            "State file %s holds version %s mappings, but this ToThingist"
             " expects version %d. Inconsistencies between versions make"
             " this likely to cause a huge mess at best. Move the file"
             " aside to start from an empty state." % (

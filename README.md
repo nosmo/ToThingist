@@ -1,17 +1,45 @@
-toThingist
+ToThingist
 ==========
 
 Bidirectional sync between [Things](http://culturedcode.com/things/) and [ToDoist](https://todoist.com).
 
+How to use ToThingist
+---------
+1. Install ToThingist via `pip` (or similar).
+2. Create a Todoist API key [via the settings panel](https://app.todoist.com/app/settings/integrations/developer)
+3. Copy the .todoist config to your home directory. Add your API token to `api_token`. Specify the projects you'd like to sync.
+4. Run ToThingist.py, the requested projects will sync. Todos will be created and resolved as needed. If needed, Things will prompt to add enable the URL handler.
+
+For best results, run ToThingist via cron or similar scheduled tooling.
+
+What is supported
+----------
+ToThingist will sync the state of Todos between Things and Todoist. This includes:
+- Creating Todos missing on either end, on any number of projects
+- Resolving or cancelling todos
+- Syncing sub-todos/checklists within TODOs
+- Accesing todos via Areas in Things
+
+ToThingist can sync shared projects in Todoist, accidentally adding the ability to share todos with other users to Things.
+
+What is not supported
+---------
+- Resolving checklist items in Things (see below)
+- Syncing changed content like textboxes in existing Todos (will be implemented in future)
+
 Requirements
 ---------
-toThingist requires Python 3 and macOS with Things installed.
+ToThingist requires Python 3 and macOS with Things installed.
 Dependencies are listed in ```pyproject.toml```.
+
+ToThingist is built around the assumption that it runs on the computer
+that Things is installed upon. Running ToThingist on other platforms
+is not supported and it cannot remotely alter todos.
 
 Operation
 ---------
 
-toThingist.py reads a config file at ```.tothingist```. This file
+ToThingist.py reads a config file at ```.tothingist```. This file
 specifies a few obvious things like the Todoist API token. The example
 ```.tothingist``` file is a complete example.
 
@@ -44,7 +72,7 @@ use ```Upcoming``` as this can't be written to in normal situations.
 Names are matched exactly, case included. Both applications allow two
 projects to share a name, so where a name is ambiguous a Todoist
 project can be named by its ```Parent/Child``` path and a Things
-project by its ```Area/Project``` one. toThingist says which paths it
+project by its ```Area/Project``` one. ToThingist says which paths it
 found rather than guessing between them.
 
 Two Todoist projects can't be mapped to the same Things location.
@@ -61,7 +89,7 @@ The optional ```thingsdb``` option points at the Things database. This
 isn't generally required as thingsapi can find it in most cases. The
 `THINGSDB` environment variable can also be set.
 
-Running toThingist.py will sync all todos in the Things location to
+Running ToThingist.py will sync all todos in the Things location to
 the Todoist project and all todos in the Todoist project to the Things
 location, for every configured project. The mapping between todos is
 maintained in the state file.
@@ -85,7 +113,7 @@ that are checked off will resolve Todoist subtasks. See
 [Subtasks](#subtasks) below for more details on how subtasks are
 handled.
 
-toThingist talks to Todoist API v1 via the official
+ToThingist talks to Todoist API v1 via the official
 [todoist-api-python](https://github.com/Doist/todoist-api-python)
 SDK. Due to constraints in the ToDoist API, *completed todos older
 than 90 days will not be completed in Things*. This is a limitation of
@@ -97,7 +125,7 @@ symmetry.
 
 All reads are done via `things.py`. Writes are managed via the [Things
 URL scheme](https://culturedcode.com/things/help/url-scheme/)
-so Things must be installed on the machine running toThingist. Two
+so Things must be installed on the machine running ToThingist. Two
 things follow from that:
 
 * The URL scheme doesn't tell us the ID of a todo it creates, so we
@@ -106,7 +134,7 @@ things follow from that:
   sync - next sync will pick this todo up. Deleting unsynced TODOs
   might create weird behaviour in these cases.
 * If the ```todoist_sync``` tag doesn't exist already, it can't be
-  applied by toThingist. toThingist will warn when a tag is
+  applied by ToThingist. ToThingist will warn when a tag is
   going to be dropped.
 
 Subtasks
@@ -123,21 +151,21 @@ separate from the todo maps, so migration between state file formats
 is not required to start using them.
 
 *Things checklist items cannot be marked as done programmatically at
-present.* toThingist warns once per run listing the subtasks this
+present.* ToThingist warns once per run listing the subtasks this
 applies to, and will keep doing so until they are marked done in
 Things manually. Todoist subtasks that map to Things checklist items
 will be resolved as expected.
 
 Two smaller limits, both from the same URL scheme:
 
-* toThingist supports one level of nesting for tasks - subtasks of
+* ToThingist supports one level of nesting for tasks - subtasks of
   subtasks will not be synced.
 * Things checklists cannot be longer than 100 elements.
 
-toThingist is not backwards compatible with older versions that used
+ToThingist is not backwards compatible with older versions that used
 the older todoist API which no longer works. Having an old state file
 could result in the recreation of old todos or other messes.
-toThingist will panic on a mismatched state file.
+ToThingist will panic on a mismatched state file.
 
 Pass ```--dry-run``` (```-n```) to see what a sync would do without
 touching Todoist, Things or the state file.

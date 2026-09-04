@@ -7,7 +7,7 @@ How to use ToThingist
 ---------
 1. Install ToThingist via `pip` (or similar).
 2. Create a Todoist API key [via the settings panel](https://app.todoist.com/app/settings/integrations/developer)
-3. Copy the .todoist config to your home directory. Add your API token to `api_token`. Specify the projects you'd like to sync.
+3. Copy the .tothingist config to your home directory. Add your API token to `api_token`. Specify the projects you'd like to sync.
 4. Run ToThingist.py, the requested projects will sync. Todos will be created and resolved as needed. If needed, Things will prompt to add enable the URL handler.
 
 For best results, run ToThingist via cron or similar scheduled tooling.

@@ -124,6 +124,10 @@ that are checked off will resolve Todoist subtasks. See
 [Subtasks](#subtasks) below for more details on how subtasks are
 handled.
 
+Sub-lists - sections in Todoist, headings in Things - are synced in
+both directions along with the todos in them, as far as each app
+allows. See [Sub-lists](#sub-lists) below.
+
 ToThingist talks to Todoist API v1 via the official
 [todoist-api-python](https://github.com/Doist/todoist-api-python)
 SDK. Due to constraints in the ToDoist API, *completed todos older
@@ -183,9 +187,51 @@ Two smaller limits, both from the same URL scheme:
   subtasks will not be synced.
 * Things checklists cannot be longer than 100 elements.
 
-Migrating from ToThingist ~c2016
+Sub-lists
 ---------
 
+Todoist sections and Things headings are both sub-lists: a grouping of
+todos inside a single project. They are synced in both directions
+along with the todos that sit in them, and are matched by name within
+a mapped pair, so they need no mapping of their own in the state file.
+
+Going from Things to Todoist, a section is created in the mapped
+project whenever a todo being synced sits under a heading that has no
+section of that name yet. Todoist will hold two sections of the same
+name quite happily, so an existing one is always reused rather than
+added to.
+
+Going the other way, *Things cannot create a heading
+programmatically*. The URL scheme only builds headings as part of a
+whole new project, and ToThingist syncs into projects that already
+exist. A todo whose Todoist section has no heading of that name is
+filed directly in the mapped location instead, and ToThingist warns
+once per run listing the headings to create by hand. Create one in
+Things and later todos of that section will land under it.
+
+A few smaller things follow from sub-lists being matched by name:
+
+* Only a Things project holds headings. Where the Things side of a
+  mapping is an area or a built-in list, a todo that belongs to some
+  project's heading still carries that heading over to Todoist, but
+  sections coming the other way have nowhere to go and are reported as
+  above.
+* An empty sub-list isn't synced. Sections and headings turn up when
+  the first todo that needs one is synced.
+* Renaming a sub-list isn't synced, in the same way that renaming a
+  todo isn't: todos already synced stay where they are, and the next
+  todo under the new name gets a sub-list of its own.
+* Moving an already-synced todo from one sub-list to another isn't
+  synced either, for the same reason.
+* A Todoist project that won't take sections at all gets the todos
+  without their grouping, and one warning saying so.
+* Todoist sub-projects are not sub-lists in this sense, as Things has
+  no projects within projects. A project inside another Todoist project
+  gets a mapping line of its own in ```[projects]```, written as its
+  ```Parent/Child``` path.
+
+Migrating from ToThingist ~c2016
+---------
 ToThingist is not backwards compatible with older versions that used
 the older todoist API which no longer works. Having an old state file
 could result in the recreation of old todos or other messes.

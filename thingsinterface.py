@@ -76,6 +76,8 @@ class ThingsInterface:
         self.filepath = os.path.expanduser(filepath) if filepath else None
         self.print_sql = print_sql
         self._locations = {}
+        self._headings = {}
+        self._heading_titles = {}
 
     def _query_args(self):
         """Return the things.py arguments shared by every query.
@@ -181,6 +183,71 @@ class ThingsInterface:
 
         return things.todos(area=resolved["uuid"], **self._query_args())
 
+    def get_headings(self, location):
+        """
+        Get the headings of a Things location.
+
+        Headings are Things' sub-lists, and only projects have them -
+        anywhere else there is nothing to return.
+
+         location: a location as accepted by resolve_location().
+        """
+
+        kind, resolved = self.resolve_location(location)
+
+        if kind != "project":
+            return []
+
+        return things.tasks(type="heading", project=resolved["uuid"],
+                            **self._query_args())
+
+    def heading_id(self, location, title):
+        """
+        Get the ID of a heading in a location, or None if the location
+        holds no heading of that title.
+
+         location: a location as accepted by resolve_location().
+         title: the title of a heading.
+        """
+
+        if not title:
+            return None
+
+        if location not in self._headings:
+            headings = {}
+            for heading in self.get_headings(location):
+                # A project can hold two headings of the same title.
+                # Things picks between them itself when handed a title,
+                # so the first is as good a guess as any.
+                headings.setdefault(heading["title"], heading["uuid"])
+            self._headings[location] = headings
+
+        return self._headings[location].get(title.strip())
+
+    def get_heading_title(self, todo):
+        """
+        Get the title of the heading a todo sits under, or None for a
+        todo that sits directly in its list.
+
+         todo: a todo as returned by get_todos().
+        """
+
+        if todo.get("heading_title"):
+            return todo["heading_title"]
+
+        # A todo can come back with the ID of its heading but no title,
+        # so look the title up ourselves rather than lose the heading.
+        heading_uuid = todo.get("heading")
+        if not heading_uuid:
+            return None
+
+        if heading_uuid not in self._heading_titles:
+            heading = things.get(heading_uuid, **self._query_args())
+            self._heading_titles[heading_uuid] = (
+                heading["title"] if heading else None)
+
+        return self._heading_titles[heading_uuid]
+
     def get_closed_todos(self, days=CLOSED_WINDOW_DAYS):
         """
         Get todos completed or cancelled in the last `days` days.
@@ -196,7 +263,7 @@ class ThingsInterface:
         return things.todos(status=None, stop_date=">=%s" % cutoff.isoformat(),
                             **self._query_args())
 
-    def create_todo(self, name, location, tags=(), notes=""):
+    def create_todo(self, name, location, tags=(), notes="", heading=None):
         """
         Create a todo and return its Things ID, or None if it could
         not be found again after creation.
@@ -207,6 +274,11 @@ class ThingsInterface:
          tags: tags to apply. Things ignores tags that don't already
           exist, so these have to have been created in the app first.
          notes: the note body of the todo.
+         heading: the title of a heading in the location to file the
+          todo under. The heading has to exist already, as the URL
+          scheme can only create one as part of a whole new project -
+          Things drops a heading it doesn't recognise and leaves the
+          todo in the project itself.
         """
 
         if not name:
@@ -227,6 +299,15 @@ class ThingsInterface:
         else:
             # Resolve a UUID in order to account for duplicate names
             parameters["list-id"] = resolved["uuid"]
+
+        if heading:
+            if kind == "project":
+                parameters["heading"] = heading
+            else:
+                LOG.warning(
+                    "Things '%s' is not a project and so holds no headings -"
+                    " todo '%s' has been filed directly in it rather than"
+                    " under '%s'.", location, name, heading)
 
         if tags:
             self._warn_about_missing_tags(tags)

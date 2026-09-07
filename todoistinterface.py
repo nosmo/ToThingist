@@ -23,6 +23,7 @@ class ToDoistInterface:
         self.token = token
         self.api = TodoistAPI(token)
         self._projects = None
+        self._sections = {}
 
     def get_projects(self, refresh=False):
         '''
@@ -95,6 +96,73 @@ class ToDoistInterface:
                 ", ".join(sorted(self.get_project_path(project)
                                  for project in matches))))
 
+    def get_sections(self, project_id, refresh=False):
+        '''
+        Get the sections of a project and store the result.
+
+        Sections are Todoist's sub-lists: a task sits either in one of
+        them or directly in its project.
+
+         project_id: the ID of the project the sections belong to.
+         refresh: fetch the sections again rather than reusing the ones
+          fetched earlier.
+        '''
+        project_id = str(project_id)
+        if project_id not in self._sections or refresh:
+            self._sections[project_id] = [
+                section
+                for page in self.api.get_sections(project_id=project_id)
+                for section in page]
+        return self._sections[project_id]
+
+    def get_section_names(self, project_id):
+        '''
+        Get the names of a project's sections, keyed by section ID.
+
+         project_id: the ID of the project the sections belong to.
+        '''
+        return {str(section.id): section.name
+                for section in self.get_sections(project_id)}
+
+    def resolve_section_id(self, project_id, name):
+        '''
+        Get the ID of the section called `name`, or None if the project
+        has no section of that name.
+
+        Unlike projects, sections live in a single project, so a name
+        is enough to name one and no path syntax is needed.
+
+         project_id: the ID of the project to look in.
+         name: the name of the section.
+        '''
+        wanted = name.strip()
+        for section in self.get_sections(project_id):
+            if section.name.strip() == wanted:
+                return str(section.id)
+        return None
+
+    def create_section(self, name, project_id):
+        '''
+        Create a section in a project and return its ID.
+
+         name: the name of the section.
+         project_id: the ID of the project to create the section in.
+        '''
+        if not name:
+            raise ValueError(
+                "Refusing to create a Todoist section with no name"
+            )
+
+        section = self.api.add_section(name=name, project_id=project_id)
+
+        # Keep the cache honest, so that the next todo belonging in
+        # this section finds it rather than making a second one of the
+        # same name.
+        if str(project_id) in self._sections:
+            self._sections[str(project_id)].append(section)
+
+        return str(section.id)
+
     def get_uncompleted_todos(self, project_id):
         '''
         Get all uncompleted todo items in a project.
@@ -145,7 +213,8 @@ class ToDoistInterface:
         '''
         return self.api.complete_task(item_id)
 
-    def create_todo(self, name, project_id=None, parent_id=None):
+    def create_todo(self, name, project_id=None, parent_id=None,
+                    section_id=None):
         '''
         Create a new todo.
 
@@ -153,6 +222,9 @@ class ToDoistInterface:
          project_id: the id of the project in which to create a todo.
          parent_id: the id of the todo to make this task a subtask of
           A subtask lives in its parent's project, so not rqeuired here.
+         section_id: the id of the section to create the todo in. A
+          subtask sits in whichever section its parent does, so this is
+          ignored alongside parent_id.
         '''
 
         if parent_id:
@@ -162,6 +234,10 @@ class ToDoistInterface:
             raise ValueError(
                 "A todoist todo must have either a project or parent"
             )
+
+        if section_id:
+            return self.api.add_task(name, project_id=project_id,
+                                     section_id=section_id)
 
         return self.api.add_task(name, project_id=project_id)
 

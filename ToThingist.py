@@ -132,11 +132,21 @@ class ToThingist(object):
         self._completed_todoist_ids = None
         self._todoist_project_ids = {}
         self._unclosable_checklist_items = []
+        self._missing_things_headings = {}
+
+        # projects that turned out not to take sections, so that one
+        # refusal is not retried for every todo below the heading
+        self._unsectionable_todoist_projects = set()
 
         # used when doing a dry run, where no parents will be
         # available for created sub-objects
         self._dry_run_todoist_parents = set()
         self._dry_run_things_parents = set()
+
+        # sections a dry run has reported the creation of, so that a
+        # section holding ten todos is reported once rather than ten
+        # times
+        self._dry_run_todoist_sections = set()
 
     def todoist_project_id(self, pair):
         """Return the ID of the Todoist project a pair syncs with."""
@@ -145,6 +155,82 @@ class ToThingist(object):
             self._todoist_project_ids[pair.todoist_project] = (
                 self.todoist.resolve_project_id(pair.todoist_project))
         return self._todoist_project_ids[pair.todoist_project]
+
+    def todoist_section_id(self, pair, heading):
+        """Return the ID of the Todoist section a Things heading maps to.
+
+        Sections and headings are matched by name within a pair, so the
+        two need no mapping of their own in the state file. Todoist will
+        happily hold two sections of the same name, so a section is only
+        created where the project has none of that name yet.
+
+         pair: the mapping being synced.
+         heading: the title of a Things heading, or None for a todo that
+          sits directly in its list.
+        """
+
+        if not heading:
+            return None
+
+        project_id = self.todoist_project_id(pair)
+        section_id = self.todoist.resolve_section_id(project_id, heading)
+        if section_id:
+            return section_id
+
+        if project_id in self._unsectionable_todoist_projects:
+            return None
+
+        if self.dry_run:
+            if (pair.todoist_project, heading) not in \
+                    self._dry_run_todoist_sections:
+                self._dry_run_todoist_sections.add(
+                    (pair.todoist_project, heading))
+                LOG.info("[dry-run] Would create ToDoist section '%s' in"
+                         " '%s'", heading, pair.todoist_project)
+            return None
+
+        LOG.info("Creating ToDoist section '%s' in '%s'", heading,
+                 pair.todoist_project)
+        try:
+            return self.todoist.create_section(heading, project_id)
+        except Exception as e:  # the SDK's errors are its own business
+            # Not every Todoist project takes sections. Losing the
+            # grouping is a good deal better than losing the rest of
+            # the sync, so carry on filing todos in the project itself.
+            LOG.warning(
+                "Could not create ToDoist section '%s' in '%s' (%s). Todos"
+                " below that heading are being created in '%s' itself.",
+                heading, pair.todoist_project, e, pair.todoist_project)
+            self._unsectionable_todoist_projects.add(project_id)
+            return None
+
+    def things_heading(self, pair, todoist_todo):
+        """Return the Things heading a Todoist todo's section maps to.
+
+        As above, the two are matched by name. Things can only create a
+        heading as part of a whole new project, so a section with no
+        heading to go to is reported at the end of the run and the todo
+        is filed directly in the mapped location instead.
+
+         pair: the mapping the todo arrived through.
+         todoist_todo: the todo being imported.
+        """
+
+        section_id = todoist_todo.section_id
+        if not section_id:
+            return None
+
+        project_id = self.todoist_project_id(pair)
+        name = self.todoist.get_section_names(project_id).get(str(section_id))
+        if not name:
+            return None
+
+        if self.things.heading_id(pair.things_location, name) is None:
+            self._missing_things_headings.setdefault(
+                pair.things_location, set()).add(name)
+            return None
+
+        return name
 
     def check_pairs(self):
         """Check that every mapped project and location exists.
@@ -229,13 +315,20 @@ class ToThingist(object):
                               todo["uuid"], todo["title"])
                     continue
 
+                heading = self.things.get_heading_title(todo)
+                # Called before the dry run check as it reports the
+                # sections a real run would have created.
+                section_id = self.todoist_section_id(pair, heading)
+
                 if self.dry_run:
                     LOG.info("[dry-run] Would create ToDoist todo '%s' in"
-                             " '%s'", todo["title"], pair.todoist_project)
+                             " '%s'%s", todo["title"], pair.todoist_project,
+                             " under '%s'" % heading if heading else "")
                     self._dry_run_things_parents.add(todo["uuid"])
                     continue
 
-                new_todo = self.todoist.create_todo(todo["title"], project_id)
+                new_todo = self.todoist.create_todo(todo["title"], project_id,
+                                                    section_id=section_id)
                 todoist_id = str(new_todo.id)
                 self.state["todoist_to_things"][todoist_id] = todo["uuid"]
                 self.state["things_to_todoist"][todo["uuid"]] = todoist_id
@@ -378,6 +471,7 @@ class ToThingist(object):
                 pair, todoist_todos + completed_todos)
 
         self._warn_about_unclosable_items()
+        self._warn_about_missing_headings()
 
         # TODO better return
         return self.state
@@ -496,6 +590,27 @@ class ToThingist(object):
                       for name in self._unclosable_checklist_items))
         self._unclosable_checklist_items = []
 
+    def _warn_about_missing_headings(self):
+        """Report the sections that Things has no heading for.
+
+        As with the checklist items above, this is a standing state of
+        affairs rather than a one-off - every run will find these again
+        until the headings are made in Things - so they are gathered up
+        and reported one warning per location.
+        """
+
+        for location, names in self._missing_things_headings.items():
+            LOG.warning(
+                "Todoist section(s) %s have no heading of that name in Things"
+                " '%s'. The Things URL scheme can only create a heading as"
+                " part of a whole new project, so the todos below them have"
+                " been filed directly in '%s'. Create the heading(s) in"
+                " Things to have later todos land under them.",
+                ", ".join("'%s'" % name for name in sorted(names)),
+                location, location)
+
+        self._missing_things_headings = {}
+
     def import_todo(self, pair, todoist_todo, tags=(), completed=False):
         """
         Import a todoist todo to a things location
@@ -527,14 +642,17 @@ class ToThingist(object):
         if completed:
             return
 
+        heading = self.things_heading(pair, todoist_todo)
+
         if self.dry_run:
-            LOG.info("[dry-run] Would create Things todo '%s' in '%s'",
-                     name, pair.things_location)
+            LOG.info("[dry-run] Would create Things todo '%s' in '%s'%s",
+                     name, pair.things_location,
+                     " under '%s'" % heading if heading else "")
             self._dry_run_todoist_parents.add(todoist_id)
             return
 
         things_id = self.things.create_todo(
-            name, pair.things_location, tags=tags)
+            name, pair.things_location, tags=tags, heading=heading)
         if not things_id:
             # The todo exists in Things but we have no ID to record for
             # it. create_todo() has said as much.

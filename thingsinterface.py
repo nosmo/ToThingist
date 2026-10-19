@@ -62,6 +62,9 @@ BUILTIN_WHEN = {
     "someday": "someday",
 }
 
+# The URL scheme "when" value that unschedules a todo
+UNSCHEDULED_WHEN = "anytime"
+
 
 class ThingsInterface:
     """Wrapper for the bits of Things that toThingist needs."""
@@ -196,7 +199,7 @@ class ThingsInterface:
         return things.todos(status=None, stop_date=">=%s" % cutoff.isoformat(),
                             **self._query_args())
 
-    def create_todo(self, name, location, tags=(), notes=""):
+    def create_todo(self, name, location, tags=(), notes="", when=None):
         """
         Create a todo and return its Things ID, or None if it could
         not be found again after creation.
@@ -207,6 +210,8 @@ class ThingsInterface:
          tags: tags to apply. Things ignores tags that don't already
           exist, so these have to have been created in the app first.
          notes: the note body of the todo.
+         when: the ISO date to schedule the todo for, if any. This takes
+          the todo out of a built-in list, much as it would in the app.
         """
 
         if not name:
@@ -228,6 +233,8 @@ class ThingsInterface:
             # Resolve a UUID in order to account for duplicate names
             parameters["list-id"] = resolved["uuid"]
 
+        if when:
+            parameters["when"] = self.when_value(when)
         if tags:
             self._warn_about_missing_tags(tags)
             parameters["tags"] = ",".join(tags)
@@ -265,6 +272,48 @@ class ThingsInterface:
         """
 
         self._open_url(self._update_url(uuid, completed="true"))
+
+    def get_open_todos(self):
+        """Get every todo waiting to be done, wherever it is filed."""
+
+        return things.todos(**self._query_args())
+
+    def set_dates(self, uuid, dates):
+        """
+        Change when a todo is scheduled for.
+
+         uuid: the Things ID of the todo.
+         dates: a dict holding a "due" (when) ISO date to set. None
+          unschedules the todo.
+        """
+
+        parameters = {}
+        if "due" in dates:
+            parameters["when"] = (self.when_value(dates["due"])
+                                  if dates["due"] else UNSCHEDULED_WHEN)
+
+        self._open_url(self._update_url(uuid, **parameters))
+
+    @staticmethod
+    def get_dates(todo):
+        """
+        Get the scheduled ("due") date of a todo as a dict of ISO dates.
+
+         todo: a todo as returned by get_todos() or get_open_todos().
+        """
+
+        return {"due": todo.get("start_date")}
+
+    @staticmethod
+    def when_value(date):
+        """
+        Get the URL scheme "when" value that schedules a todo for an ISO
+        date. A date that has come already means Today.
+        """
+
+        if date <= datetime.date.today().isoformat():
+            return "today"
+        return date
 
     def get_checklist_items(self, uuid):
         """

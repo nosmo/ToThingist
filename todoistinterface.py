@@ -15,6 +15,15 @@ PROJECT_PATH_SEPARATOR = "/"
 
 INBOX_NAME = "Inbox"
 
+# The due string that removes a todo's due date
+NO_DUE_DATE = "no date"
+
+
+def to_date(iso_date):
+    """Turn an ISO date, or None, into what the API library takes."""
+
+    return datetime.date.fromisoformat(iso_date) if iso_date else None
+
 
 class ToDoistInterface:
     """Ugly wrapper for the ToDoist.com API"""
@@ -145,7 +154,7 @@ class ToDoistInterface:
         '''
         return self.api.complete_task(item_id)
 
-    def create_todo(self, name, project_id=None, parent_id=None):
+    def create_todo(self, name, project_id=None, parent_id=None, due=None):
         '''
         Create a new todo.
 
@@ -153,17 +162,54 @@ class ToDoistInterface:
          project_id: the id of the project in which to create a todo.
          parent_id: the id of the todo to make this task a subtask of
           A subtask lives in its parent's project, so not rqeuired here.
+         due: the ISO date the todo is due, if any.
         '''
 
+        # The API library leaves out arguments that are None, so this
+        # can be passed along whether or not it is set.
+        dates = {"due_date": to_date(due)}
+
         if parent_id:
-            return self.api.add_task(name, parent_id=parent_id)
+            return self.api.add_task(name, parent_id=parent_id, **dates)
 
         if not project_id:
             raise ValueError(
                 "A todoist todo must have either a project or parent"
             )
 
-        return self.api.add_task(name, project_id=project_id)
+        return self.api.add_task(name, project_id=project_id, **dates)
+
+    def set_dates(self, item_id, dates):
+        '''
+        Change the due date of a todo.
+
+         item_id: the todoist ID of the todo.
+         dates: a dict holding a "due" ISO date to set. None removes it.
+        '''
+
+        changes = {}
+        if "due" in dates:
+            if dates["due"] is None:
+                changes["due_string"] = NO_DUE_DATE
+            else:
+                changes["due_date"] = to_date(dates["due"])
+
+        return self.api.update_task(item_id, **changes)
+
+    @staticmethod
+    def get_dates(todo):
+        '''
+        Get the due date of a todo as a dict of ISO dates.
+
+        A due date with a time of day is reduced to its date.
+
+         todo: a todo as returned by get_all_todos().
+        '''
+
+        day = todo.due.date if todo.due else None
+        if isinstance(day, datetime.datetime):
+            day = day.date()
+        return {"due": day.isoformat() if day else None}
 
     @staticmethod
     def get_subtasks(todos):

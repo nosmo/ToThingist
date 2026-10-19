@@ -5,6 +5,7 @@
 import argparse
 import collections
 import configparser
+import datetime
 import json
 import logging
 import os
@@ -42,12 +43,30 @@ def new_state():
 
     Subtasks a mapping of their own as Things checklists are not
     todos, but todoist subtasks are. An ID can/will appear in both.
+
+    "dates" holds the due date last synced for each todo,
+    by Todoist ID, so that a run can tell which side has changed one.
+    Things calls a due date "when".
     """
 
     return {"version": STATE_VERSION,
             "todoist_to_things": {}, "things_to_todoist": {},
             "todoist_to_things_subtasks": {},
-            "things_to_todoist_subtasks": {}}
+            "things_to_todoist_subtasks": {},
+            "dates": {}}
+
+
+def future(date):
+    """Return an ISO date if it is still to come, or None otherwise.
+
+    Things gives every todo in Today a scheduled date, that of the day
+    it arrived there, so only dates that are still to come say anything
+    about when a todo has been planned for.
+    """
+
+    if date and date > datetime.date.today().isoformat():
+        return date
+    return None
 
 
 def has_mappings(state):
@@ -131,6 +150,7 @@ class ToThingist(object):
         self._completed_todoist_todos = None
         self._completed_todoist_ids = None
         self._todoist_project_ids = {}
+        self._open_things_todos = None
         self._unclosable_checklist_items = []
 
         # used when doing a dry run, where no parents will be
@@ -235,10 +255,14 @@ class ToThingist(object):
                     self._dry_run_things_parents.add(todo["uuid"])
                     continue
 
-                new_todo = self.todoist.create_todo(todo["title"], project_id)
+                things_dates = self.things.get_dates(todo)
+                dates = {"due": future(things_dates["due"])}
+                new_todo = self.todoist.create_todo(
+                    todo["title"], project_id, **dates)
                 todoist_id = str(new_todo.id)
                 self.state["todoist_to_things"][todoist_id] = todo["uuid"]
                 self.state["things_to_todoist"][todo["uuid"]] = todoist_id
+                self.state["dates"][todoist_id] = dates
 
             # Done after the loop above so that checklists hanging off
             # todos created by this very run have a Todoist parent to go
@@ -374,6 +398,9 @@ class ToThingist(object):
                 if not todo.parent_id:
                     self.import_todo(pair, todo, tags=tags, completed=True)
 
+            self.sync_dates([todo for todo in todoist_todos
+                             if not todo.parent_id])
+
             self.sync_todoist_subtasks_to_things(
                 pair, todoist_todos + completed_todos)
 
@@ -468,6 +495,104 @@ class ToThingist(object):
                 self.state["things_to_todoist_subtasks"][item_uuid] = \
                     subtask_id
 
+    def open_things_todos(self):
+        """Return the open Things todos, wherever they are, by ID.
+
+        A todo with a date can be filed away from the location it was
+        synced to - Upcoming, say - so they are all looked up at once.
+        """
+
+        if self._open_things_todos is None:
+            self._open_things_todos = {
+                todo["uuid"]: todo for todo in self.things.get_open_todos()}
+        return self._open_things_todos
+
+    def sync_dates(self, todoist_todos):
+        """
+        Bring the due dates of synced todos into line.
+
+        A date changed on one side since the last run is copied to the
+        other. Where both have changed it, Things wins - except for the
+        due date of a recurring todo, which only Todoist can change.
+
+         todoist_todos: open top-level todos of a mapped Todoist project.
+        """
+
+        for todo in todoist_todos:
+            todoist_id = str(todo.id)
+            things_id = self.state["todoist_to_things"].get(todoist_id)
+            things_todo = self.open_things_todos().get(things_id)
+            if not things_todo:
+                # Not synced, or closed in Things and so about to be
+                # completed in Todoist anyway
+                continue
+
+            todoist_dates = self.todoist.get_dates(todo)
+            things_dates = self.things.get_dates(things_todo)
+            stored = self.state["dates"].setdefault(todoist_id, {})
+
+            side, stored["due"] = self._sync_date(
+                todoist_dates["due"], things_dates["due"],
+                stored.get("due"), todo)
+            if not side:
+                continue
+
+            interface, item_id = ((self.things, things_id) if side == "Things"
+                                  else (self.todoist, todoist_id))
+            described = "due %s" % (stored["due"] or "removed")
+            if self.dry_run:
+                LOG.info("[dry-run] Would set %s of '%s' in %s",
+                         described, todo.content, side)
+            else:
+                interface.set_dates(item_id, {"due": stored["due"]})
+                LOG.info("Set %s of '%s' in %s", described, todo.content,
+                         side)
+
+    @staticmethod
+    def _sync_date(ours, theirs, last, todo):
+        """
+        Work out which way, if any, the due date needs copying.
+
+        Returns the side to copy to ("Things", "ToDoist" or None) and
+        the date both sides will hold afterwards.
+
+         ours: the date Todoist has.
+         theirs: the date Things has.
+         last: the date recorded at the last sync, if any.
+         todo: the Todoist todo.
+        """
+
+        # See future() for why only dates still to come count
+        seen, expected = future(theirs), future(last)
+
+        todoist_changed = ours != last
+        things_changed = seen != expected
+
+        if things_changed and todo.due and todo.due.is_recurring:
+            # A plain due date would stop the todo recurring
+            todoist_changed, things_changed = True, False
+
+        if todoist_changed and things_changed and ours != seen:
+            LOG.warning("The due date of '%s' was changed in both Todoist"
+                        " and Things - keeping Things'", todo.content)
+            todoist_changed = False
+
+        if todoist_changed:
+            if ours is None and seen is None:
+                # Unscheduling a todo that is already in Today would
+                # only take it out of Today
+                return None, ours
+            return "Things", ours
+
+        if not things_changed:
+            return None, last
+
+        date = seen
+        if seen is None and theirs and expected:
+            # Moved from a date to come into Today
+            date = datetime.date.today().isoformat()
+        return ("ToDoist" if date != ours else None), date
+
     def closed_checklist_items(self, things_uuid):
         """Return the IDs of a Things todo's checklist items that are done."""
 
@@ -533,8 +658,9 @@ class ToThingist(object):
             self._dry_run_todoist_parents.add(todoist_id)
             return
 
+        dates = self.todoist.get_dates(todoist_todo)
         things_id = self.things.create_todo(
-            name, pair.things_location, tags=tags)
+            name, pair.things_location, tags=tags, when=dates["due"])
         if not things_id:
             # The todo exists in Things but we have no ID to record for
             # it. create_todo() has said as much.
@@ -542,6 +668,7 @@ class ToThingist(object):
 
         self.state["todoist_to_things"][todoist_id] = things_id
         self.state["things_to_todoist"][things_id] = todoist_id
+        self.state["dates"][todoist_id] = dates
 
 
 def read_state(statefile):

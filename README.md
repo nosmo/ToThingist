@@ -24,6 +24,7 @@ ToThingist will sync the state of Todos between Things and Todoist. This include
 - Creating Todos missing on either end, on any number of projects
 - Resolving or cancelling todos
 - Syncing sub-todos/checklists within TODOs
+- Syncing due dates (see below)
 - Accesing todos via Areas in Things
 
 ToThingist can sync shared projects in Todoist, accidentally adding the ability to share todos with other users to Things.
@@ -41,6 +42,28 @@ Dependencies are listed in ```pyproject.toml```.
 ToThingist is built around the assumption that it runs on the computer
 that Things is installed upon. Running ToThingist on other platforms
 is not supported and it cannot remotely alter todos.
+
+Dates
+---------
+
+A Todoist due date is the day a todo is planned for, which Things calls
+"when". ToThingist keeps the two in step: a date changed on one side is
+copied to the other on the next run, and if both sides changed it,
+Things' is kept. Deadlines aren't synced in either direction - Things
+deadlines stay in Things, and Todoist deadlines stay in Todoist.
+
+Things gives every todo in Today a "when" date of the day it arrived
+there, so only dates still to come are synced from Things - scheduling a
+todo for next week sets its Todoist due date, but dropping it into Today
+doesn't give it one. A Todoist due date that has already come puts the
+Things todo in Today. Scheduling a todo for a date files it under
+Upcoming in Things, just as it would when done in the app.
+
+Some limitations:
+- Times are dropped. A Todoist due time isn't copied to Things, and a
+  date set from Things replaces the Todoist due date and time.
+- Recurring Todoist todos keep their recurrence: Things is given the
+  next date, and changes made to it in Things are reverted.
 
 Operation
 ---------

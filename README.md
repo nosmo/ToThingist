@@ -48,6 +48,11 @@ between todoist IDs and things IDs. Use of the state file is not
 required but not using it will result in duplication of imported todos
 so you should probably use it.
 
+The optional ```thingstags``` option lists tags, separated by commas,
+to apply to todos that ToThingist imports into Things - for example
+```thingstags: todoist_sync``` to make them easy to find. No tags are
+applied unless it is set.
+
 Writing to Things requires the use of the Things URL scheme. See the
 [official Things
 documentation](https://culturedcode.com/things/support/articles/2803573/#overview-authorization)
@@ -133,9 +138,9 @@ things follow from that:
   cases, the ID won't be found and the task will be skipped in the
   sync - next sync will pick this todo up. Deleting unsynced TODOs
   might create weird behaviour in these cases.
-* If the ```todoist_sync``` tag doesn't exist already, it can't be
-  applied by ToThingist. ToThingist will warn when a tag is
-  going to be dropped.
+* Tags named by the ```thingstags``` option (see below) can only be
+  applied if they already exist in Things. ToThingist will warn when a
+  tag is going to be dropped.
 
 Subtasks
 ---------

@@ -71,6 +71,13 @@ def get_option(config, section, option):
     return None
 
 
+def read_tags(config):
+    """Get the tags to apply to todos imported into Things, if any."""
+
+    tags = get_option(config, "config", "thingstags") or ""
+    return [tag.strip() for tag in tags.split(",") if tag.strip()]
+
+
 def read_pairs(config):
     """Work out which Todoist projects sync with which Things locations.
 
@@ -341,16 +348,14 @@ class ToThingist(object):
             LOG.info("[dry-run] Would create ToDoist subtask '%s' under"
                      " '%s'", item["title"], todo["title"])
 
-    def sync_todoist_to_things(self, tag_import=False):
+    def sync_todoist_to_things(self, tags=()):
 
         """Sync each mapped todoist project into its Things location.
 
          Args:
-          tag_import: tag all imported todos with "todoist_sync"
+          tags: tags to apply to todos imported into Things
 
         """
-
-        tags = ["todoist_sync"] if tag_import else []
 
         for pair in self.pairs:
             project_id = self.todoist_project_id(pair)
@@ -643,6 +648,7 @@ def main():
         statefile = os.path.expanduser(get_option(config, "config",
                                                  "statefile"))
         pairs = read_pairs(config)
+        tags = read_tags(config)
     except (configparser.Error, ValueError) as e:
         sys.exit("Bad configuration in %s: %s" % (options.configpath, e))
 
@@ -669,7 +675,7 @@ def main():
         sys.exit("Cannot sync the projects configured in %s: %s" % (
             options.configpath, e))
 
-    tothingist_obj.sync_todoist_to_things(tag_import=True)
+    tothingist_obj.sync_todoist_to_things(tags=tags)
     tothingist_obj.sync_things_to_todoist()
 
     if options.dry_run:

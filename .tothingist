@@ -6,6 +6,8 @@ statefile: ~/.tothingist_state
 #thingsdb: ~/Library/Group Containers/JLMPQHK86H.com.culturedcode.ThingsMac/ThingsData-XXXXXX/Things Database.thingsdatabase/main.sqlite
 # Optional - sync todoist Inbox with this location in things. Useful for basic operations, but generally rendered a little obsolete by the `[projects`] structure.
 #thingslocation: Today
+# Optional - tag todos imported into Things with these tags, separated by commas. The tags must already exist in Things.
+#thingstags: todoist_sync
 
 # Which Todoist project syncs with which Things list, project or area,
 # one pair per line. Todoist project on the left, Things project on the right

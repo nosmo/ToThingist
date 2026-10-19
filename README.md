@@ -170,6 +170,9 @@ ToThingist will panic on a mismatched state file.
 Pass ```--dry-run``` (```-n```) to see what a sync would do without
 touching Todoist, Things or the state file.
 
+Pass ```--quiet``` (```-q```) to silence everything but warnings and
+errors, which suits running ToThingist from cron.
+
 Pass ```--print-sql``` (```-S```) to print every SQL query things.py
 runs against the Things database, which is handy when a location or a
 todo isn't showing up where you expect.

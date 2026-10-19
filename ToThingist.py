@@ -595,6 +595,9 @@ def main():
     parser.add_argument("-v", "--verbose", dest="verbose",
                         help="Be verbose",
                         action="store_true")
+    parser.add_argument("-q", "--quiet", dest="quiet",
+                        help="Only report warnings and errors",
+                        action="store_true")
     parser.add_argument("-S", "--print-sql", dest="print_sql",
                         help="Print every SQL query run against the Things"
                              " database. Implies --verbose",
@@ -611,10 +614,20 @@ def main():
     options = parser.parse_args()
 
     verbose = options.verbose or options.print_sql
+    if verbose and options.quiet:
+        parser.error("--quiet can't be combined with --verbose or"
+                     " --print-sql")
+
+    if verbose:
+        level = logging.DEBUG
+    elif options.quiet:
+        level = logging.WARNING
+    else:
+        level = logging.INFO
 
     logging.basicConfig(
         stream=sys.stderr,
-        level=logging.DEBUG if verbose else logging.INFO,
+        level=level,
         format="%(message)s")
 
     config = configparser.ConfigParser()

@@ -3,14 +3,20 @@ ToThingist
 
 Bidirectional sync between [Things](http://culturedcode.com/things/) and [ToDoist](https://todoist.com).
 
-How to use ToThingist
+Quickstart
 ---------
-1. Install ToThingist via `pip` (or similar).
-2. Create a Todoist API key [via the settings panel](https://app.todoist.com/app/settings/integrations/developer)
-3. Copy the .tothingist config to your home directory. Add your API token to `api_token`. Specify the projects you'd like to sync.
-4. Run ToThingist.py, the requested projects will sync. Todos will be created and resolved as needed. If needed, Things will prompt to add enable the URL handler.
+1. Create a python venv: `python -m venv venv`
+2. Install the dependencies: `pip install -r requirements.txt`
+3. Create a Todoist API key [via the settings panel](https://app.todoist.com/app/settings/integrations/developer)
+4. Copy the .tothingist config to your home directory. Add your API token to `api_token`. Specify the projects you'd like to sync.
+5. Run ToThingist.py, the requested projects will sync. Todos will be created and resolved as needed. If needed, Things will prompt to add enable the URL handler.
 
-For best results, run ToThingist via cron or similar scheduled tooling.
+*To automate ToThingist* and run it every 10 minutes, install the launchd handler (me.nosmo.tothingist.plist):
+1. Edit me.nosmo.tothingist.plist to replace MYPATH with the path to your ToThingist checkout
+2. Install the plist: `cp me.nosmo.tothingist.plist ~/Library/LaunchAgents/` (If this errors, run `mkdir ~/Library/LaunchAgents/` and try again)
+3. Activate the plist: `launchctl bootstrap "gui/$(id -u)"  ~/Library/LaunchAgents/me.nosmo.tothingist.plist`
+
+ToThingist should now run every 10 minutes. Logs will go to /tmp/tothingist*log but by default ToThingist will only create output on error. The first execution of the timer might result in a pop-up asking you to allow python access to the path containing ToThingist.
 
 What is supported
 ----------
@@ -142,6 +148,16 @@ things follow from that:
   applied if they already exist in Things. ToThingist will warn when a
   tag is going to be dropped.
 
+Pass ```--dry-run``` (```-n```) to see what a sync would do without
+touching Todoist, Things or the state file.
+
+Pass ```--quiet``` (```-q```) to silence everything but warnings and
+errors, which suits running ToThingist from cron.
+
+Pass ```--print-sql``` (```-S```) to print every SQL query things.py
+runs against the Things database, which is handy when a location or a
+todo isn't showing up where you expect.
+
 Subtasks
 ---------
 
@@ -167,17 +183,10 @@ Two smaller limits, both from the same URL scheme:
   subtasks will not be synced.
 * Things checklists cannot be longer than 100 elements.
 
+Migrating from ToThingist ~c2016
+---------
+
 ToThingist is not backwards compatible with older versions that used
 the older todoist API which no longer works. Having an old state file
 could result in the recreation of old todos or other messes.
 ToThingist will panic on a mismatched state file.
-
-Pass ```--dry-run``` (```-n```) to see what a sync would do without
-touching Todoist, Things or the state file.
-
-Pass ```--quiet``` (```-q```) to silence everything but warnings and
-errors, which suits running ToThingist from cron.
-
-Pass ```--print-sql``` (```-S```) to print every SQL query things.py
-runs against the Things database, which is handy when a location or a
-todo isn't showing up where you expect.
